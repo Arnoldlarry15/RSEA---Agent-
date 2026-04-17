@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import { timingSafeEqual } from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { createServer as createHttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -21,8 +22,11 @@ async function startServer() {
   const requireAuth = (req: any, res: any, next: any) => {
     const secret = process.env.API_SECRET;
     if (!secret) return next(); // Auth not configured — allow all
-    const authHeader = req.headers['authorization'];
-    if (!authHeader || authHeader !== `Bearer ${secret}`) {
+    const authHeader: string = req.headers['authorization'] ?? '';
+    const expected = `Bearer ${secret}`;
+    const headerBuf = Buffer.from(authHeader);
+    const expectedBuf = Buffer.from(expected);
+    if (headerBuf.length !== expectedBuf.length || !timingSafeEqual(headerBuf, expectedBuf)) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
     return next();
