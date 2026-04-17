@@ -4,7 +4,7 @@
 
 # RSEA Agent
 
-A modular, autonomous AI agent framework following the **Research, Scan, Execute, Act (RSEA)** architecture. The agent runs a persistent heartbeat loop, integrates a Gemini-powered cognition layer, and operates in a safe simulation environment — all controlled through a React-based dashboard.
+A modular, autonomous AI agent framework following the **Research, Scan, Execute, Act (RSEA)** architecture. The agent runs a persistent heartbeat loop, integrates a Gemini-powered cognition layer, and operates in a safe simulation environment — all controlled through a React-based dashboard with real-time WebSocket log streaming.
 
 ## Architecture
 
@@ -15,15 +15,15 @@ The server is organized into the following layers:
 | **Core** | `server/core/` | `Agent`, `AgentLoop`, `GoalManager`, `MemorySystem`, `Reflector`, `RulesEngine` |
 | **Cognition** | `server/cognition/` | `LLMInterface` — wraps the Google Gemini API |
 | **Modules** | `server/modules/` | `Controller`, `Evaluator`, `Executor`, `Planner`, `Sniper`, `Spotter` |
-| **Economy** | `server/economy/` | `Simulator` — safe simulated execution environment |
-| **Logic** | `server/logic/` | `Scorer` — signal scoring and threshold checks |
-| **Utils** | `server/utils/` | `Logger` |
+| **Utils** | `server/utils/` | `Logger` — file-backed log with rotation and real-time pub/sub |
 
 Each agent cycle follows the RSEA pattern:
-1. **Observe** — Spotter gathers signals
-2. **Think** — Planner + Evaluator reason over goals and instructions with LLM support
-3. **Execute** — Sniper fires actions through the Simulator (simulation mode by default)
-4. **Reflect** — Reflector persists outcomes to short-term and long-term memory
+1. **Observe** — Spotter gathers live market signals (BTC/USDT from Binance + simulated feeds)
+2. **Plan** — Planner decomposes the primary goal into an atomic task tree with LLM support
+3. **Evaluate** — Evaluator ranks tasks by risk, value density, and speed
+4. **Execute** — Sniper fires the top-ranked task through the Executor
+5. **Reflect** — Reflector persists insights to short-term and long-term (vector) memory
+6. **Self-Modify** — Controller periodically adjusts its own strategic prompt modifiers via LLM
 
 A `RulesEngine` threshold (60/100) gates all actions before execution.
 
@@ -57,11 +57,12 @@ A `RulesEngine` threshold (60/100) gates all actions before execution.
 |--------|-------|-------------|
 | GET | `/api/status` | Framework version, uptime, and current goals |
 | GET | `/api/health` | Health check for DB and LLM connections |
-| GET | `/api/logs` | Last 100 agent log events |
+| GET | `/api/logs` | Last 100 agent log events (REST fallback) |
 | GET | `/api/memory` | Full memory snapshot (short-term + long-term) |
 | GET | `/api/debug/state` | Loop telemetry, goal state, and memory stats |
 | POST | `/api/command` | Queue a manual instruction for the agent |
 | POST | `/api/control` | `start` / `stop` the loop, or `set_interval` (ms) |
+| WS | `/ws/logs` | Real-time log stream (sends `history` on connect, `log` on each new event) |
 
 ## Scripts
 

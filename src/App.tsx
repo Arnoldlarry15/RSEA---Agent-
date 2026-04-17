@@ -84,16 +84,6 @@ export default function App() {
   const [isCommandLoading, setIsCommandLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const fetchLogs = async () => {
-    try {
-      const res = await fetch('/api/logs');
-      const data = await res.json();
-      setLogs(data);
-    } catch (err) {
-      console.error('Failed to fetch logs:', err);
-    }
-  };
-
   const fetchStatus = async () => {
     try {
       const res = await fetch('/api/status');
@@ -159,11 +149,34 @@ export default function App() {
     }
   };
 
+  // Real-time log streaming via WebSocket
   useEffect(() => {
-    fetchLogs();
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/logs`);
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'history') {
+          setLogs(msg.logs);
+        } else if (msg.type === 'log') {
+          setLogs(prev => [msg.entry, ...prev].slice(0, 100));
+        }
+      } catch (_) { /* ignore malformed frames */ }
+    };
+
+    ws.onerror = () => {
+      // Fallback: fetch logs once if WebSocket fails
+      fetch('/api/logs').then(r => r.json()).then(setLogs).catch(() => {});
+    };
+
+    return () => ws.close();
+  }, []);
+
+  // Poll status and debug state (lightweight — no log fetching)
+  useEffect(() => {
     fetchStatus();
     const interval = setInterval(() => {
-      fetchLogs();
       fetchStatus();
       if (isDebugOpen) fetchDebugData();
     }, 2000);

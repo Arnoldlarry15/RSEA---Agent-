@@ -136,6 +136,42 @@ export class LLMInterface {
     }
   }
 
+  async generateModifiers(recentContext: any[], currentModifiers: string[]): Promise<string[] | null> {
+    if (!this.ai) return null;
+
+    try {
+      const prompt = `
+        You are the self-modification layer of the RSEA Agent.
+        Based on recent context, adjust the strategic operating modifiers to improve future iterations.
+        
+        RECENT CONTEXT: ${JSON.stringify(recentContext).substring(0, 300)}
+        CURRENT MODIFIERS: ${JSON.stringify(currentModifiers)}
+
+        Return an updated array of up to 3 concise strategic rules.
+
+        OUTPUT PROTOCOL (STRICT JSON):
+        {
+          "modifiers": ["rule 1", "rule 2", "rule 3"]
+        }
+      `;
+
+      const result = await this.ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: { responseMimeType: "application/json" }
+      });
+
+      const parsed = JSON.parse(result.text);
+      if (parsed.modifiers && Array.isArray(parsed.modifiers)) {
+        return parsed.modifiers;
+      }
+      return null;
+    } catch (err) {
+      console.error("generateModifiers failed:", err);
+      return null;
+    }
+  }
+
   healthCheck(): boolean {
     return this.ai !== null;
   }

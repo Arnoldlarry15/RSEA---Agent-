@@ -62,21 +62,9 @@ export class Controller {
     if (!this.llm.healthCheck() || Math.random() > 0.1) return; // Only process periodically
 
     try {
-      const selfReflectPrompt = `
-      Based on the recent context: ${JSON.stringify(recentContext).substring(0, 300)}
-      Your current running modifiers are: ${JSON.stringify(this.globalPromptModifiers)}
-
-      Should we adjust our strategic modifiers to improve future iterations? 
-      Return the updated array of string modifiers. Limit to 3 rules.
-
-      OUTPUT PROTOCOL (STRICT JSON):
-      {
-        "modifiers": ["rule 1", "rule 2"]
-      }`;
-
-      const res = await this.llm.analyze([], [selfReflectPrompt]);
-      if (res && res.modifiers && Array.isArray(res.modifiers)) {
-        this.globalPromptModifiers = res.modifiers;
+      const updatedModifiers = await this.llm.generateModifiers(recentContext, this.globalPromptModifiers);
+      if (updatedModifiers) {
+        this.globalPromptModifiers = updatedModifiers;
         logEvent('self_modification', { updatedModifiers: this.globalPromptModifiers });
       }
     } catch (e) {
