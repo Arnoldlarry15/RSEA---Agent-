@@ -40,6 +40,11 @@ vi.mock('../../../server/core/goals', () => {
     });
     overridePrimaryGoal = mockOverridePrimaryGoal;
     updateSubTasks = vi.fn();
+    isComplete = vi.fn().mockReturnValue(false);
+    isFailed = vi.fn().mockReturnValue(false);
+    markCompleted = vi.fn();
+    markFailed = vi.fn();
+    getStatus = vi.fn().mockReturnValue('ACTIVE');
   }
   return { GoalManager };
 });
