@@ -299,6 +299,21 @@ Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.`;
     }
   }
 
+  /**
+   * Low-level JSON completion. Returns the raw parsed JSON from the LLM.
+   * Falls back to null in simulation mode so callers can provide their own defaults.
+   */
+  async complete(systemPrompt: string, userPrompt: string): Promise<any | null> {
+    if (!this.provider) return null;
+    try {
+      const raw = await this.callChat(systemPrompt, userPrompt);
+      return JSON.parse(raw);
+    } catch (err) {
+      console.error(`[LLM] complete error (${this.provider}):`, err);
+      return null;
+    }
+  }
+
   healthCheck(): boolean {
     return this.provider !== null;
   }

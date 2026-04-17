@@ -17,8 +17,8 @@ const MEMORY_FILE = path.join(DATA_DIR, 'memory.db');
 export class MemorySystem {
   private db: Database.Database;
 
-  constructor() {
-    this.db = new Database(MEMORY_FILE);
+  constructor(dbPath: string = MEMORY_FILE) {
+    this.db = new Database(dbPath);
     sqliteVec.load(this.db);
     this.initDb();
   }
