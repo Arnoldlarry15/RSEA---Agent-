@@ -24,44 +24,44 @@ export class Planner {
   }
 
   async decomposeTask(objective: string, context: any[]): Promise<Plan> {
+    const fallbackPlan = (description: string): Plan => ({
+      id: `plan_${Date.now()}`,
+      objective,
+      tasks: [{ id: 't1', description, status: 'pending' }]
+    });
+
     // Generate decomposition tree
     if (!this.llm.healthCheck()) {
-      return {
-        id: `plan_${Date.now()}`,
-        objective,
-        tasks: [{ id: 't1', description: 'Simulated atomic task', status: 'pending' }]
-      };
+      return fallbackPlan('Simulated atomic task');
     }
 
+    const systemPrompt = `You are the 'Planner' agent of RSEA.
+Decompose the given objective into a minimal task tree. Allow for parallel attempts where useful.
+Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.
+
+OUTPUT PROTOCOL (STRICT JSON):
+{
+  "tasks": [
+    { "id": "t1", "description": "...", "parallelNode": false }
+  ]
+}`;
+
+    const userPrompt = `OBJECTIVE: ${objective}
+CONTEXT: ${JSON.stringify(context).substring(0, 500)}`;
+
     try {
-      const prompt = `
-      You are the 'Planner' agent of RSEA.
-      OBJECTIVE: ${objective}
-      CONTEXT: ${JSON.stringify(context).substring(0, 500)}
-
-      Decompose this objective into a minimal task tree. Allow for parallel attempts where useful.
-
-      OUTPUT PROTOCOL (STRICT JSON):
-      {
-        "tasks": [
-          { "id": "t1", "description": "...", "parallelNode": false }
-        ]
+      const result = await this.llm.complete(systemPrompt, userPrompt);
+      const tasks = result?.tasks;
+      if (!Array.isArray(tasks) || tasks.length === 0) {
+        return fallbackPlan('Fallback task execution');
       }
-      `;
-
-      const result = await this.llm.analyze([], [prompt]);
-      const tasks = result.tasks || [{ id: 't1', description: 'Fallback task execution', status: 'pending' }];
       return {
         id: `plan_${Date.now()}`,
         objective,
         tasks: tasks.map((t: any) => ({ ...t, status: 'pending' }))
       };
     } catch (err) {
-      return {
-        id: `plan_${Date.now()}`,
-        objective,
-        tasks: [{ id: 't1', description: 'Fallback task execution', status: 'pending' }]
-      };
+      return fallbackPlan('Fallback task execution');
     }
   }
 }

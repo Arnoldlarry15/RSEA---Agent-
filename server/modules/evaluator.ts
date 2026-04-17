@@ -12,30 +12,28 @@ export class Evaluator {
       return strategies.map((s, i) => ({ ...s, rank: i, score: 0.5 }));
     }
 
+    const systemPrompt = `You are the 'Evaluator' agent of RSEA.
+Rank the provided strategies before execution based on risk, value density, and speed.
+Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.
+
+OUTPUT PROTOCOL (STRICT JSON):
+{
+  "ranked": [
+    { "strategyId": "...", "score": 90, "reasoning": "..." }
+  ]
+}`;
+
+    const userPrompt = `OBJECTIVE: ${objective}
+STRATEGIES: ${JSON.stringify(strategies)}`;
+
     try {
-      const prompt = `
-      You are the 'Evaluator' agent of RSEA.
-      OBJECTIVE: ${objective}
-      STRATEGIES: ${JSON.stringify(strategies)}
+      const result = await this.llm.complete(systemPrompt, userPrompt);
 
-      Rank these strategies before execution based on risk, value density, and speed.
-
-      OUTPUT PROTOCOL (STRICT JSON):
-      {
-        "ranked": [
-          { "strategyId": "...", "score": 90, "reasoning": "..." }
-        ]
-      }
-      `;
-
-      // using analyze as a generic completion wrapper
-      const result = await this.llm.analyze([], [prompt]);
-      
-      if (result.ranked) {
+      if (result?.ranked && Array.isArray(result.ranked)) {
         return strategies.map(s => {
           const rankData = result.ranked.find((r: any) => r.strategyId === s.id);
           return { ...s, score: rankData ? rankData.score : 50 };
-        }).sort((a, b) => b.score - a.score);
+        }).sort((a: any, b: any) => b.score - a.score);
       }
       return strategies;
     } catch (err) {
