@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import { timingSafeEqual } from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { createServer as createHttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -16,6 +17,20 @@ async function startServer() {
   console.log(`[INIT] Starting RSEA Server in ${process.env.NODE_ENV || 'development'} mode`);
 
   app.use(express.json());
+
+  // Bearer token middleware for protected endpoints
+  const requireAuth = (req: any, res: any, next: any) => {
+    const secret = process.env.API_SECRET;
+    if (!secret) return next(); // Auth not configured — allow all
+    const authHeader: string = req.headers['authorization'] ?? '';
+    const expected = `Bearer ${secret}`;
+    const headerBuf = Buffer.from(authHeader);
+    const expectedBuf = Buffer.from(expected);
+    if (headerBuf.length !== expectedBuf.length || !timingSafeEqual(headerBuf, expectedBuf)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    return next();
+  };
 
   // Log all requests for debugging
   app.use((req, res, next) => {
@@ -92,7 +107,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/command', (req, res) => {
+  app.post('/api/command', requireAuth, (req, res) => {
     try {
       const { command } = req.body;
       if (!command || typeof command !== 'string') {
@@ -109,7 +124,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/control', (req, res) => {
+  app.post('/api/control', requireAuth, (req, res) => {
     try {
       const { action, interval } = req.body;
       if (action === 'start') {

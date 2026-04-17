@@ -1,4 +1,9 @@
+import vm from 'vm';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { logEvent } from '../utils/logger';
+
+const execFileAsync = promisify(execFile);
 
 export class Executor {
   /**
@@ -20,10 +25,36 @@ export class Executor {
           const res = await fetch(action.payload.url, action.payload.options || {});
           outcome = `API Call completed with status ${res.status}`;
         } else if (action.tool === 'code_eval') {
-          // Extremely restricted proto-eval for demonstration of capability 
-          outcome = `Simulated code eval block executed: ${action.payload.code.substring(0, 50)}...`;
+          const code: string = action.payload?.code ?? '';
+          let capturedOutput = '';
+          const sandbox = {
+            console: {
+              log: (...args: any[]) => { capturedOutput += args.map(String).join(' ') + '\n'; },
+              error: (...args: any[]) => { capturedOutput += args.map(String).join(' ') + '\n'; },
+              warn: (...args: any[]) => { capturedOutput += args.map(String).join(' ') + '\n'; }
+            }
+          };
+          // Deny access to require, process, fs — sandbox has only the mock console
+          const script = new vm.Script(code);
+          script.runInNewContext(vm.createContext(sandbox), { timeout: 2000 });
+          outcome = capturedOutput || '(no output)';
         } else if (action.tool === 'system_command') {
-          outcome = `Simulated system command: ${action.payload.command}`;
+          const rawCommand: string = action.payload?.command ?? '';
+          const parts = rawCommand.trim().split(/\s+/);
+          const cmd = parts[0];
+          const args = parts.slice(1);
+          const allowlist = (process.env.ALLOWED_COMMANDS ?? '')
+            .split(',')
+            .map((s: string) => s.trim())
+            .filter(Boolean);
+          if (!allowlist.includes(cmd)) {
+            logEvent('executor_blocked', { reason: 'command not in allowlist', command: cmd });
+            status = 'blocked';
+            outcome = `Command '${cmd}' is not permitted (not in ALLOWED_COMMANDS allowlist)`;
+          } else {
+            const { stdout, stderr } = await execFileAsync(cmd, args);
+            outcome = stdout || stderr || '(no output)';
+          }
         } else if (action.tool === 'simulate') {
           const luck = Math.random();
           if (luck > 0.95) outcome = `Anomaly: Collision detected for simulated task (${action.payload.info || ''}).`;
