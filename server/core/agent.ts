@@ -74,17 +74,13 @@ export class Agent {
     this.memory.addEvent({ type: 'orchestrated_cycle', data: cycleData, instructions });
     logEvent('think_and_act', { cycleData, instructions });
 
-    // Detect goal completion: all results succeeded and none failed
-    const allSucceeded = cycleData.results.length > 0 &&
-      cycleData.results.every((r: any) => r.status !== 'failed');
-    const goalCompleted = this.goals.isComplete() || (allSucceeded && cycleData.results.some((r: any) => r.outcome?.includes('completed')));
-    if (goalCompleted && !this.goals.isComplete()) {
-      this.goals.markCompleted();
-      logEvent('agent_goal_completed', { goal: currentGoals.primary });
-    }
+    // Goal completion is driven by explicit markCompleted() calls (e.g. from external signals
+    // or future criteria checks) — not by fragile outcome-string matching.
+    const goalCompleted = this.goals.isComplete();
 
-    // Reflect: pass observations, ranked plan, actual execution results, and result metadata
-    await this.reflector.reflect(cycleData.observations, cycleData.plan, cycleData.results, cycleData.results);
+    // Reflect: pass observations, ranked plan, extracted action list, and outcome results
+    const executedActions = cycleData.results.map((r: any) => r.action);
+    await this.reflector.reflect(cycleData.observations, cycleData.plan, executedActions, cycleData.results);
 
     this.currentState = AgentState.IDLE;
     return {

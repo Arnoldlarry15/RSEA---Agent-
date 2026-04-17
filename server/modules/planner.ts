@@ -31,7 +31,7 @@ export class Planner {
     });
 
     // Pull recent context from memory to inform planning (strategic retrieval)
-    const recentMemory = (this.memory as any).getRecentContext?.() ?? [];
+    const recentMemory = this.memory.getRecentContext?.() ?? [];
     const enrichedContext = [
       ...context,
       ...(recentMemory.length > 0 ? [{ type: 'memory_context', events: recentMemory.slice(0, 5) }] : [])

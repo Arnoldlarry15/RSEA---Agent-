@@ -5,7 +5,10 @@ export interface ValidationResult {
   reason?: string;
 }
 
-/** Tools the agent is permitted to invoke. */
+/** Tools the agent is permitted to invoke.
+ *  Note: system_command and api_fetch are further constrained at the Executor level
+ *  via ALLOWED_COMMANDS and ALLOWED_FETCH_HOSTS env vars respectively — the validator
+ *  only performs the format/presence pre-check here. */
 const ALLOWED_TOOLS = new Set(['simulate', 'api_fetch', 'code_eval', 'system_command']);
 
 /** Parameters that must be present (non-null/undefined) for a given tool. */

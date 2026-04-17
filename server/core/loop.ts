@@ -1,5 +1,4 @@
 import { Agent } from './agent';
-import { AgentState } from './state';
 
 export class AgentLoop {
   private agent: Agent;
@@ -68,7 +67,8 @@ export class AgentLoop {
   }
 
   setInterval(ms: number) {
-    this.interval = ms;
+    // Clamp to safe bounds: 1 second minimum, 10 minutes maximum
+    this.interval = Math.max(1000, Math.min(ms, 600000));
   }
 
   getAgent() {
@@ -82,7 +82,7 @@ export class AgentLoop {
       cycleCount: this.cycleCount,
       lastError: this.lastError,
       lastExecutionTime: this.lastExecutionTime,
-      state: this.agent.getState() as AgentState,
+      state: this.agent.getState(),
       consecutiveFailures: this.consecutiveFailures
     };
   }
