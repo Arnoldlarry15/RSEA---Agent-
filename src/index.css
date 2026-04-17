@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+@theme {
+  --color-immersive-bg: #020408;
+  --color-immersive-surface: rgba(15, 23, 33, 0.6);
+  --color-immersive-cyan: #00f2ff;
+  --color-immersive-amber: #ffaa00;
+  --color-immersive-red: #ff3e3e;
+  --color-immersive-dim: #8a9ba8;
+  --color-immersive-main: #e1e8ed;
+  --color-immersive-border: rgba(255, 255, 255, 0.08);
+}
+
+:root {
+  --bg: #020408;
+  --surface: rgba(15, 23, 33, 0.6);
+  --accent-cyan: #00f2ff;
+  --accent-amber: #ffaa00;
+  --accent-red: #ff3e3e;
+  --text-dim: #8a9ba8;
+  --text-main: #e1e8ed;
+  --border: rgba(255, 255, 255, 0.08);
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+body {
+  background-color: var(--bg);
+  background-image: 
+    radial-gradient(circle at 20% 20%, rgba(0, 242, 255, 0.05) 0%, transparent 40%),
+    radial-gradient(circle at 80% 80%, rgba(255, 170, 0, 0.03) 0%, transparent 40%),
+    linear-gradient(rgba(0, 242, 255, 0.01) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 242, 255, 0.01) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 60px 60px, 60px 60px;
+  color: var(--text-main);
+  min-height: 100vh;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Glass Morphism Base */
+.glass {
+  background: var(--surface);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+.glass-card {
+  background: var(--surface);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  border-radius: 1rem;
+  transition-property: all;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 300ms;
+}
+
+.glass-card:hover {
+  border-color: rgba(0, 242, 255, 0.2);
+  box-shadow: 0 8px 32px 0 rgba(0, 242, 255, 0.05);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 242, 255, 0.2);
+}
+
+@keyframes neural-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+.neural-node {
+  animation: neural-pulse 3s infinite ease-in-out;
+}
