@@ -85,6 +85,72 @@ describe('Executor', () => {
       expect(results[0].outcome).toContain('network error');
       vi.unstubAllGlobals();
     });
+
+    // SSRF protection
+    it('blocks requests to localhost', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'api_fetch', payload: { url: 'http://localhost/secret' } }
+      ]);
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].outcome).toContain('blocked');
+    });
+
+    it('blocks requests to 127.x loopback addresses', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'api_fetch', payload: { url: 'http://127.0.0.1:8080/internal' } }
+      ]);
+      expect(results[0].status).toBe('blocked');
+    });
+
+    it('blocks requests to RFC-1918 private IP ranges', async () => {
+      for (const url of [
+        'http://10.0.0.1/admin',
+        'http://172.16.0.1/admin',
+        'http://192.168.1.1/admin',
+      ]) {
+        const results = await executor.execute([
+          { action: 'strike', tool: 'api_fetch', payload: { url } }
+        ]);
+        expect(results[0].status).toBe('blocked');
+      }
+    });
+
+    it('blocks requests to the cloud metadata endpoint', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'api_fetch', payload: { url: 'http://169.254.169.254/latest/meta-data/' } }
+      ]);
+      expect(results[0].status).toBe('blocked');
+    });
+
+    it('blocks non-HTTP(S) schemes', async () => {
+      for (const url of ['file:///etc/passwd', 'ftp://internal.host/data']) {
+        const results = await executor.execute([
+          { action: 'strike', tool: 'api_fetch', payload: { url } }
+        ]);
+        expect(results[0].status).toBe('blocked');
+      }
+    });
+
+    it('blocks a host not in ALLOWED_FETCH_HOSTS when the allowlist is set', async () => {
+      process.env.ALLOWED_FETCH_HOSTS = 'api.example.com';
+      const results = await executor.execute([
+        { action: 'strike', tool: 'api_fetch', payload: { url: 'https://other.example.com/data' } }
+      ]);
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].outcome).toContain('ALLOWED_FETCH_HOSTS');
+      delete process.env.ALLOWED_FETCH_HOSTS;
+    });
+
+    it('allows a host present in ALLOWED_FETCH_HOSTS', async () => {
+      process.env.ALLOWED_FETCH_HOSTS = 'api.example.com';
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 200 }) as any);
+      const results = await executor.execute([
+        { action: 'strike', tool: 'api_fetch', payload: { url: 'https://api.example.com/v1/data' } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      delete process.env.ALLOWED_FETCH_HOSTS;
+      vi.unstubAllGlobals();
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -112,6 +178,15 @@ describe('Executor', () => {
       ]);
       expect(results[0].status).toBe('failed');
       expect(results[0].outcome).toContain('boom');
+    });
+
+    it('rejects code that exceeds the 10 000 character size limit', async () => {
+      const bigCode = 'var x = 1;\n'.repeat(1000); // > 10 000 chars
+      const results = await executor.execute([
+        { action: 'strike', tool: 'code_eval', payload: { code: bigCode } }
+      ]);
+      expect(results[0].status).toBe('failed');
+      expect(results[0].outcome).toContain('too large');
     });
   });
 

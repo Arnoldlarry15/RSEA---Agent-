@@ -5,6 +5,36 @@ import { logEvent } from '../utils/logger';
 
 const execFileAsync = promisify(execFile);
 
+/** Hostnames / IP patterns that must never be reached by api_fetch (SSRF guard). */
+const PRIVATE_HOST_PATTERNS: RegExp[] = [
+  /^localhost$/i,
+  /^127\.\d+\.\d+\.\d+$/,          // 127.0.0.0/8 loopback
+  /^0\.0\.0\.0$/,
+  /^::1$/,                          // IPv6 loopback
+  /^10\.\d+\.\d+\.\d+$/,           // RFC-1918 10/8
+  /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,  // RFC-1918 172.16/12
+  /^192\.168\.\d+\.\d+$/,          // RFC-1918 192.168/16
+  /^169\.254\.\d+\.\d+$/,          // Link-local / cloud metadata (169.254.169.254)
+  /^fd[0-9a-f]{2}:/i,              // IPv6 ULA fc00::/7
+];
+
+/** Returns true when the URL targets a private/loopback address or uses a disallowed scheme. */
+function isSsrfTarget(rawUrl: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return true; // Malformed URL — block it
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return true; // Only HTTP(S) outbound requests are allowed
+  }
+  return PRIVATE_HOST_PATTERNS.some((p) => p.test(parsed.hostname));
+}
+
+/** Maximum number of characters accepted by the code_eval executor. */
+const MAX_CODE_SIZE = 10_000;
+
 export class Executor {
   /**
    * Executes tools, code, or APIs based on decision outputs.
@@ -22,10 +52,32 @@ export class Executor {
           if (!action.payload || !action.payload.url) {
             throw new Error("Missing URL for api_fetch tool");
           }
-          const res = await fetch(action.payload.url, action.payload.options || {});
-          outcome = `API Call completed with status ${res.status}`;
+          const targetUrl: string = action.payload.url;
+          if (isSsrfTarget(targetUrl)) {
+            logEvent('executor_blocked', { reason: 'SSRF target blocked', url: targetUrl });
+            status = 'blocked';
+            outcome = `Request to '${targetUrl}' was blocked (private/loopback/non-HTTP target)`;
+          } else {
+            // Optional host allowlist: ALLOWED_FETCH_HOSTS=api.example.com,data.example.com
+            const allowedHosts = (process.env.ALLOWED_FETCH_HOSTS ?? '')
+              .split(',')
+              .map((s: string) => s.trim())
+              .filter(Boolean);
+            const parsed = new URL(targetUrl);
+            if (allowedHosts.length > 0 && !allowedHosts.includes(parsed.hostname)) {
+              logEvent('executor_blocked', { reason: 'host not in ALLOWED_FETCH_HOSTS', host: parsed.hostname });
+              status = 'blocked';
+              outcome = `Host '${parsed.hostname}' is not in the ALLOWED_FETCH_HOSTS allowlist`;
+            } else {
+              const res = await fetch(targetUrl, action.payload.options || {});
+              outcome = `API Call completed with status ${res.status}`;
+            }
+          }
         } else if (action.tool === 'code_eval') {
           const code: string = action.payload?.code ?? '';
+          if (code.length > MAX_CODE_SIZE) {
+            throw new Error(`Code too large: ${code.length} chars (max ${MAX_CODE_SIZE})`);
+          }
           let capturedOutput = '';
           const sandbox = {
             console: {
