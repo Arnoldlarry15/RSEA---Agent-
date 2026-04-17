@@ -43,12 +43,22 @@ export class Controller {
     // 3. Evaluate Strategies (we treat tasks as potential separate strategies here for parallel attempts)
     const rankedTasks = await this.evaluator.rankStrategies(objective, plan.tasks);
 
-    // 4. Act (Sniper targets the top ranked strategy)
+    // 4. Act — run parallel tasks concurrently, single-fire for the rest
     const results = [];
     if (rankedTasks.length > 0) {
-      const topTask = rankedTasks[0];
-      const strikeResult = await this.sniper.executeSurgicalStrike(topTask);
-      results.push(...strikeResult);
+      const parallelTasks = rankedTasks.filter((t: any) => t.parallelNode === true);
+      if (parallelTasks.length > 1) {
+        // Execute all parallel-flagged top tasks concurrently
+        const parallelResults = await Promise.all(
+          parallelTasks.map((t: any) => this.sniper.executeSurgicalStrike(t))
+        );
+        for (const r of parallelResults) results.push(...r);
+      } else {
+        // Single-fire: execute only the top-ranked task
+        const topTask = rankedTasks[0];
+        const strikeResult = await this.sniper.executeSurgicalStrike(topTask);
+        results.push(...strikeResult);
+      }
     }
 
     return { observations, plan: rankedTasks, results };

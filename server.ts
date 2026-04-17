@@ -17,6 +17,17 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Bearer token middleware for protected endpoints
+  const requireAuth = (req: any, res: any, next: any) => {
+    const secret = process.env.API_SECRET;
+    if (!secret) return next(); // Auth not configured — allow all
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || authHeader !== `Bearer ${secret}`) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    return next();
+  };
+
   // Log all requests for debugging
   app.use((req, res, next) => {
     if (req.url.startsWith('/api')) {
@@ -92,7 +103,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/command', (req, res) => {
+  app.post('/api/command', requireAuth, (req, res) => {
     try {
       const { command } = req.body;
       if (!command || typeof command !== 'string') {
@@ -109,7 +120,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/control', (req, res) => {
+  app.post('/api/control', requireAuth, (req, res) => {
     try {
       const { action, interval } = req.body;
       if (action === 'start') {
