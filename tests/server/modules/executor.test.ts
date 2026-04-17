@@ -181,7 +181,7 @@ describe('Executor', () => {
     });
 
     it('rejects code that exceeds the 10 000 character size limit', async () => {
-      const bigCode = 'var x = 1;\n'.repeat(1000); // > 10 000 chars
+      const bigCode = 'var x = 1;\n'.repeat(1000); // 11 000 chars — above the 10 000 limit
       const results = await executor.execute([
         { action: 'strike', tool: 'code_eval', payload: { code: bigCode } }
       ]);
