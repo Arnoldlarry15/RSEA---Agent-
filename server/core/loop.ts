@@ -11,6 +11,11 @@ export class AgentLoop {
   private lastError: string | null = null;
   private lastExecutionTime: number = 0;
 
+  // Recovery tracking
+  private consecutiveFailures: number = 0;
+  private static readonly RECOVERY_INTERVAL_MS = 30000;
+  private static readonly MAX_FAILURES_BEFORE_BACKOFF = 3;
+
   constructor() {
     this.agent = new Agent();
   }
@@ -22,9 +27,16 @@ export class AgentLoop {
       this.cycleCount++;
       await this.agent.runCycle();
       this.lastError = null;
+      this.consecutiveFailures = 0;
     } catch (err: any) {
+      this.consecutiveFailures++;
       this.lastError = err.message || String(err);
       console.error("Error in agent cycle:", err);
+
+      // Apply backoff when failures accumulate — widen the next sleep window
+      if (this.consecutiveFailures >= AgentLoop.MAX_FAILURES_BEFORE_BACKOFF) {
+        console.warn(`[Loop] ${this.consecutiveFailures} consecutive failures — entering recovery backoff`);
+      }
     } finally {
       this.lastExecutionTime = Date.now() - startTime;
     }
@@ -38,7 +50,11 @@ export class AgentLoop {
     const run = async () => {
       if (!this.isRunning) return;
       await this.step();
-      this.timer = setTimeout(run, this.interval);
+      // Use a longer interval when the agent is in a failure backoff state
+      const nextInterval = this.consecutiveFailures >= AgentLoop.MAX_FAILURES_BEFORE_BACKOFF
+        ? AgentLoop.RECOVERY_INTERVAL_MS
+        : this.interval;
+      this.timer = setTimeout(run, nextInterval);
     };
     
     run();
@@ -51,7 +67,8 @@ export class AgentLoop {
   }
 
   setInterval(ms: number) {
-    this.interval = ms;
+    // Clamp to safe bounds: 1 second minimum, 10 minutes maximum
+    this.interval = Math.max(1000, Math.min(ms, 600000));
   }
 
   getAgent() {
@@ -64,7 +81,9 @@ export class AgentLoop {
       interval: this.interval,
       cycleCount: this.cycleCount,
       lastError: this.lastError,
-      lastExecutionTime: this.lastExecutionTime
+      lastExecutionTime: this.lastExecutionTime,
+      state: this.agent.getState(),
+      consecutiveFailures: this.consecutiveFailures
     };
   }
 }

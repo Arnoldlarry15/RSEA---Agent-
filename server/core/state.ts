@@ -1,0 +1,7 @@
+export enum AgentState {
+  IDLE = 'IDLE',
+  PLANNING = 'PLANNING',
+  EXECUTING = 'EXECUTING',
+  EVALUATING = 'EVALUATING',
+  RECOVERING = 'RECOVERING'
+}
