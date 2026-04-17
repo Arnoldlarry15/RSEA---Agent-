@@ -20,11 +20,7 @@ export class AgentLoop {
     console.log("\n--- New Cycle ---");
     try {
       this.cycleCount++;
-      const observations = await this.agent.observe();
-      const thoughts = await this.agent.think(observations);
-      const actions = this.agent.decide(thoughts);
-      const results = this.agent.act(actions);
-      await this.agent.reflect(observations, thoughts, actions, results);
+      await this.agent.runCycle();
       this.lastError = null;
     } catch (err: any) {
       this.lastError = err.message || String(err);

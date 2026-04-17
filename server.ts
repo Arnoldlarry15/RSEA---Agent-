@@ -1,12 +1,16 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
+import { createServer as createHttpServer } from 'http';
+import { WebSocketServer, WebSocket } from 'ws';
 import { AgentLoop } from './server/core/loop';
-import { getLogs } from './server/utils/logger';
+import { getLogs, subscribeToLogs } from './server/utils/logger';
 
 async function startServer() {
   const app = express();
+  const httpServer = createHttpServer(app);
   const PORT = 3000;
 
   console.log(`[INIT] Starting RSEA Server in ${process.env.NODE_ENV || 'development'} mode`);
@@ -88,24 +92,18 @@ async function startServer() {
     }
   });
 
-  app.get('/api/memory/data', (req, res) => {
-    try {
-      const data = agentLoop.getAgent().getMemory().getSnapshot();
-      res.json(data);
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to parsing memory data' });
-    }
-  });
-
   app.post('/api/command', (req, res) => {
     try {
       const { command } = req.body;
-      if (command) {
-        agentLoop.getAgent().addInstruction(command);
-        res.json({ message: 'Instruction queued' });
-      } else {
-        res.status(400).json({ error: 'No command provided' });
+      if (!command || typeof command !== 'string') {
+        return res.status(400).json({ error: typeof command !== 'string' ? 'Command must be a string' : 'No command provided' });
       }
+      const trimmed = command.trim();
+      if (trimmed.length === 0 || trimmed.length > 2000) {
+        return res.status(400).json({ error: 'Command must be between 1 and 2000 characters' });
+      }
+      agentLoop.getAgent().addInstruction(trimmed);
+      res.json({ message: 'Instruction queued' });
     } catch (err) {
       res.status(500).json({ error: 'Failed to process command' });
     }
@@ -135,6 +133,24 @@ async function startServer() {
     }
   });
 
+  // WebSocket server for real-time log streaming
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws/logs' });
+  wss.on('connection', (ws) => {
+    // Send the last 100 logs on connect
+    const initial = getLogs().slice(-100);
+    ws.send(JSON.stringify({ type: 'history', logs: initial }));
+
+    // Subscribe to new log events and push to this client
+    const unsubscribe = subscribeToLogs((entry) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'log', entry }));
+      }
+    });
+
+    ws.on('close', () => unsubscribe());
+    ws.on('error', () => unsubscribe());
+  });
+
   // Vite middleware setup
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -150,9 +166,9 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`RSEA Server running at http://localhost:${PORT}`);
-    // Start agent after server is successfuly listening
+    // Start agent after server is successfully listening
     agentLoop.start();
   });
 }
