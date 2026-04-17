@@ -18,10 +18,18 @@ async function startServer() {
 
   app.use(express.json());
 
-  // Bearer token middleware for protected endpoints
+  // Bearer token middleware for protected endpoints.
+  // In production API_SECRET must be set; requests are rejected if it is missing.
   const requireAuth = (req: any, res: any, next: any) => {
     const secret = process.env.API_SECRET;
-    if (!secret) return next(); // Auth not configured — allow all
+    if (!secret) {
+      if (process.env.NODE_ENV === 'production') {
+        console.error('[AUTH] API_SECRET is not configured — rejecting request');
+        return res.status(503).json({ error: 'Server misconfigured: API_SECRET not set' });
+      }
+      // Development only: allow unauthenticated access when no secret is configured
+      return next();
+    }
     const authHeader: string = req.headers['authorization'] ?? '';
     const expected = `Bearer ${secret}`;
     const headerBuf = Buffer.from(authHeader);
@@ -81,7 +89,7 @@ async function startServer() {
     }
   });
 
-  app.get('/api/memory', (req, res) => {
+  app.get('/api/memory', requireAuth, (req, res) => {
     try {
       const memory = agentLoop.getAgent().getMemory().getSnapshot();
       res.json(memory);
@@ -90,7 +98,7 @@ async function startServer() {
     }
   });
 
-  app.get('/api/debug/state', (req, res) => {
+  app.get('/api/debug/state', requireAuth, (req, res) => {
     try {
       const agent = agentLoop.getAgent();
       res.json({
