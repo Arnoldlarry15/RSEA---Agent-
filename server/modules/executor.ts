@@ -6,16 +6,17 @@ import { logEvent } from '../utils/logger';
 const execFileAsync = promisify(execFile);
 
 /** Hostnames / IP patterns that must never be reached by api_fetch (SSRF guard). */
+const OCT = '(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)';
 const PRIVATE_HOST_PATTERNS: RegExp[] = [
   /^localhost$/i,
-  /^127\.\d+\.\d+\.\d+$/,          // 127.0.0.0/8 loopback
+  new RegExp(`^127\\.${OCT}\\.${OCT}\\.${OCT}$`),    // 127.0.0.0/8 loopback
   /^0\.0\.0\.0$/,
-  /^::1$/,                          // IPv6 loopback
-  /^10\.\d+\.\d+\.\d+$/,           // RFC-1918 10/8
-  /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,  // RFC-1918 172.16/12
-  /^192\.168\.\d+\.\d+$/,          // RFC-1918 192.168/16
-  /^169\.254\.\d+\.\d+$/,          // Link-local / cloud metadata (169.254.169.254)
-  /^fd[0-9a-f]{2}:/i,              // IPv6 ULA fc00::/7
+  /^::1$/,                                              // IPv6 loopback
+  new RegExp(`^10\\.${OCT}\\.${OCT}\\.${OCT}$`),       // RFC-1918 10/8
+  new RegExp(`^172\\.(1[6-9]|2[0-9]|3[01])\\.${OCT}\\.${OCT}$`),  // RFC-1918 172.16/12
+  new RegExp(`^192\\.168\\.${OCT}\\.${OCT}$`),         // RFC-1918 192.168/16
+  new RegExp(`^169\\.254\\.${OCT}\\.${OCT}$`),         // Link-local / cloud metadata
+  /^fd[0-9a-f]{2}:/i,                                  // IPv6 ULA fc00::/7
 ];
 
 /** Returns true when the URL targets a private/loopback address or uses a disallowed scheme. */
