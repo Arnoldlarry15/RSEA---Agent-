@@ -93,6 +93,10 @@ export class Agent {
   }
 
   addInstruction(text: string) {
+    if (this.manualInstructions.length >= 100) {
+      console.warn('[Agent] Instruction queue is full (100 items). Dropping new instruction.');
+      return;
+    }
     this.manualInstructions.push(text);
     this.memory.addEvent({ type: 'user_command', data: text });
     logEvent('command', text);

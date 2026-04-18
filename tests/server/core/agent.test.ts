@@ -100,6 +100,30 @@ describe('Agent', () => {
       await agent.runCycle();
       expect(mockReflect).toHaveBeenCalled();
     });
+
+    it('enters RECOVERING state and calls markFailed after max consecutive failures', async () => {
+      const { logEvent } = await import('../../../server/utils/logger');
+      mockRunCycle
+        .mockRejectedValueOnce(new Error('cycle failed'))
+        .mockRejectedValueOnce(new Error('cycle failed'))
+        .mockRejectedValueOnce(new Error('cycle failed'));
+
+      const goals = agent.getGoals() as any;
+      const markFailedSpy = goals.markFailed as ReturnType<typeof vi.fn>;
+
+      // 3 consecutive failures trigger markFailed
+      for (let i = 0; i < 3; i++) {
+        try { await agent.runCycle(); } catch {}
+      }
+
+      expect(markFailedSpy).toHaveBeenCalled();
+      expect(logEvent).toHaveBeenCalledWith('agent_goal_failed', expect.objectContaining({ reason: 'max_consecutive_failures' }));
+    });
+
+    it('propagates errors thrown by the Controller', async () => {
+      mockRunCycle.mockRejectedValueOnce(new Error('controller error'));
+      await expect(agent.runCycle()).rejects.toThrow('controller error');
+    });
   });
 
   describe('addInstruction', () => {
@@ -129,6 +153,16 @@ describe('Agent', () => {
       mockRunCycle.mockClear();
       await agent.runCycle();
       expect(mockRunCycle.mock.calls[0][1]).toHaveLength(0);
+    });
+
+    it('drops instructions when queue is at 100 items', () => {
+      for (let i = 0; i < 100; i++) {
+        agent.addInstruction(`instruction ${i}`);
+      }
+      // 101st instruction should be dropped
+      agent.addInstruction('overflow instruction');
+      // addEvent should have been called exactly 100 times (not 101)
+      expect(mockAddEvent).toHaveBeenCalledTimes(100);
     });
   });
 

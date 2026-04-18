@@ -12,9 +12,9 @@ RUN npm run build
 FROM node:22-alpine
 WORKDIR /app
 
-# Install all dependencies (tsx is a devDependency needed at runtime)
+# Install production dependencies only (tsx is in dependencies, so included here)
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --omit=dev
 
 # Copy compiled frontend assets and server source
 COPY --from=builder /app/dist ./dist

@@ -75,6 +75,14 @@ function getVerbosity(): string {
   return (process.env.VERBOSITY_LEVEL ?? 'normal').toLowerCase();
 }
 
+/** Counter for log events — rotation is triggered every 100 writes. */
+let _logEventCount = 0;
+
+/** Reset the log-event counter. Exposed for testing purposes only. */
+export function _resetLogEventCounter() {
+  _logEventCount = 0;
+}
+
 export function logEvent(stage: string, data: any, traceId?: string) {
   const verbosity = getVerbosity();
   // In silent mode only critical/error stages are logged to the console
@@ -104,9 +112,15 @@ export function logEvent(stage: string, data: any, traceId?: string) {
 
   try {
     fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n');
-    rotateLogs();
   } catch (err) {
     console.error('Failed to write log:', err);
+    return;
+  }
+
+  // Rotation is expensive (read + rewrite entire file); only run every 100 events.
+  _logEventCount++;
+  if (_logEventCount % 100 === 0) {
+    rotateLogs();
   }
 }
 
@@ -120,7 +134,6 @@ function rotateLogs() {
     }
   } catch (e) {
     console.error('Log rotation failed:', e);
-    // Non-critical: rotation failure doesn't stop the agent
   }
 }
 

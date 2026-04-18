@@ -37,14 +37,18 @@ export const VERBOSITY: VerbosityLevel =
     ? (rawVerbosity as VerbosityLevel)
     : 'normal';
 
-/** 0.0 = extremely conservative, 1.0 = always act (original behaviour). Default: 1.0 */
-export const DECISION_AGGRESSIVENESS: number = parseFloat01(
-  process.env.DECISION_AGGRESSIVENESS,
-  1.0
-);
+/** 0.0 = extremely conservative, 1.0 = always act. Default: 0.5. Read dynamically so env overrides work at runtime. */
+export function getDecisionAggressiveness(): number {
+  return parseFloat01(process.env.DECISION_AGGRESSIVENESS, 0.5);
+}
 
-/** Minimum score (0–100) a task must achieve before the RulesEngine allows execution. */
-export const CONFIDENCE_THRESHOLD: number = parseInt0100(
-  process.env.CONFIDENCE_THRESHOLD,
-  60
-);
+/** @deprecated Use getDecisionAggressiveness() — kept for legacy server.ts import. */
+export const DECISION_AGGRESSIVENESS: number = getDecisionAggressiveness();
+
+/** Minimum score (0–100) a task must achieve before the RulesEngine allows execution. Read dynamically. */
+export function getConfidenceThreshold(): number {
+  return parseInt0100(process.env.CONFIDENCE_THRESHOLD, 60);
+}
+
+/** @deprecated Use getConfidenceThreshold() — kept for legacy server.ts import. */
+export const CONFIDENCE_THRESHOLD: number = getConfidenceThreshold();

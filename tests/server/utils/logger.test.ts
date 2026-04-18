@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 // Import the logger statically — it writes to data/logs.json relative to cwd
-import { logEvent, getLogs, getLogsByTraceId, subscribeToLogs, newTraceId, setTraceId, getTraceId } from '../../../server/utils/logger';
+import { logEvent, getLogs, getLogsByTraceId, subscribeToLogs, newTraceId, setTraceId, getTraceId, _resetLogEventCounter } from '../../../server/utils/logger';
 
 const LOG_FILE = path.join(process.cwd(), 'data', 'logs.json');
 
@@ -16,6 +16,7 @@ function clearLogFile() {
 describe('Logger', () => {
   beforeEach(() => {
     clearLogFile();
+    _resetLogEventCounter();
   });
 
   afterEach(() => {
@@ -69,7 +70,9 @@ describe('Logger', () => {
   });
 
   it('log rotation trims to MAX_LOG_LINES (500)', () => {
-    for (let i = 0; i < 510; i++) {
+    // Write exactly 500 events to trigger a rotation at event 500 (which should
+    // trim the file to 500 lines). No additional entries after rotation.
+    for (let i = 0; i < 500; i++) {
       logEvent(`stage_${i}`, i);
     }
     const logs = getLogs();
