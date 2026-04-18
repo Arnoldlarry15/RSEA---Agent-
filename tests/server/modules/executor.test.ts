@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 import { Executor } from '../../../server/modules/executor';
 
 // Suppress logger output during tests
@@ -485,8 +487,6 @@ describe('Executor', () => {
       expect(readResults[0].result).toBe('hello registry');
 
       // cleanup
-      const { default: fs } = await import('fs');
-      const { default: path } = await import('path');
       const f = path.join(process.cwd(), 'data', '_executor_test.txt');
       if (fs.existsSync(f)) fs.unlinkSync(f);
     });

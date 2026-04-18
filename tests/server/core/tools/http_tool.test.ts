@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { HTTPTool } from '../../../../server/core/tools/http_tool';
 
+const tool = new HTTPTool();
+
 afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.ALLOWED_FETCH_HOSTS;
 });
 
 describe('HTTPTool', () => {
-  const tool = new HTTPTool();
 
   it('has name "http_request"', () => {
     expect(tool.name).toBe('http_request');

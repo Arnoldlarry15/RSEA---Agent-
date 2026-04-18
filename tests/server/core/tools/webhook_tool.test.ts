@@ -1,5 +1,7 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { WebhookTool } from '../../../../server/core/tools/webhook_tool';
+
+const tool = new WebhookTool();
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -7,7 +9,6 @@ afterEach(() => {
 });
 
 describe('WebhookTool', () => {
-  const tool = new WebhookTool();
 
   it('has name "webhook"', () => {
     expect(tool.name).toBe('webhook');
