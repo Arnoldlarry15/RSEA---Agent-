@@ -1,5 +1,6 @@
 import { LLMInterface } from '../cognition/llm';
 import { MemorySystem } from '../core/memory';
+import { MemoryRetriever } from '../memory/retriever';
 
 export interface Plan {
   id: string;
@@ -18,10 +19,12 @@ export interface Task {
 export class Planner {
   private llm: LLMInterface;
   private memory: MemorySystem;
+  private retriever: MemoryRetriever | undefined;
 
-  constructor(llm: LLMInterface, memory: MemorySystem) {
+  constructor(llm: LLMInterface, memory: MemorySystem, retriever?: MemoryRetriever) {
     this.llm = llm;
     this.memory = memory;
+    this.retriever = retriever;
   }
 
   async decomposeTask(objective: string, context: any[]): Promise<Plan> {
@@ -31,12 +34,22 @@ export class Planner {
       tasks: [{ id: 't1', description, status: 'pending' }]
     });
 
-    // Pull recent context from memory to inform planning (strategic retrieval)
-    const recentMemory = this.memory.getRecentContext?.() ?? [];
-    const enrichedContext = [
-      ...context,
-      ...(recentMemory.length > 0 ? [{ type: 'memory_context', events: recentMemory.slice(0, 5) }] : [])
-    ];
+    // Inject retrieved memories (episodic, semantic, strategic) to influence planning.
+    // Falls back to a simple recent-context slice when no retriever is wired in.
+    let enrichedContext: any[];
+    if (this.retriever) {
+      const memories = this.retriever.retrieve(objective, context);
+      enrichedContext = [
+        ...context,
+        ...(memories.length > 0 ? [{ type: 'memory_context', memories }] : [])
+      ];
+    } else {
+      const recentMemory = this.memory.getRecentContext?.() ?? [];
+      enrichedContext = [
+        ...context,
+        ...(recentMemory.length > 0 ? [{ type: 'memory_context', events: recentMemory.slice(0, 5) }] : [])
+      ];
+    }
 
     // Generate decomposition tree
     if (!this.llm.healthCheck()) {

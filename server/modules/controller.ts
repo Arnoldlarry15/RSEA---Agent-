@@ -4,6 +4,7 @@ import { Evaluator } from './evaluator';
 import { Sniper } from './sniper';
 import { LLMInterface } from '../cognition/llm';
 import { MemorySystem } from '../core/memory';
+import { MemoryRetriever } from '../memory/retriever';
 import { Observer } from '../core/observation/observer';
 import { Comparator } from '../core/evaluation/comparator';
 import { logEvent } from '../utils/logger';
@@ -28,11 +29,11 @@ export class Controller {
   private cycleCount: number = 0;
   private static readonly SELF_MODIFY_EVERY_N_CYCLES = 10;
 
-  constructor(llm: LLMInterface, memory: MemorySystem) {
+  constructor(llm: LLMInterface, memory: MemorySystem, retriever?: MemoryRetriever) {
     this.llm = llm;
     this.memory = memory;
     this.spotter = new Spotter();
-    this.planner = new Planner(this.llm, this.memory);
+    this.planner = new Planner(this.llm, this.memory, retriever);
     this.evaluator = new Evaluator(this.llm);
     this.sniper = new Sniper();
     this.observer = new Observer();
