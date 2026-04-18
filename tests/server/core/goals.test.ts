@@ -107,4 +107,36 @@ describe('GoalManager', () => {
   it('isFailed() returns false when not failed', () => {
     expect(gm.isFailed()).toBe(false);
   });
+
+  describe('restore', () => {
+    it('restores primary goal, subTasks, status, and successCriteria', () => {
+      gm.restore({
+        primary: 'Restored primary',
+        subTasks: ['task A', 'task B'],
+        status: GoalStatus.PAUSED,
+        successCriteria: ['criterion X'],
+      });
+      expect(gm.getGoals().primary).toBe('Restored primary');
+      expect(gm.getGoals().subTasks).toEqual(['task A', 'task B']);
+      expect(gm.getStatus()).toBe(GoalStatus.PAUSED);
+      expect(gm.getSuccessCriteria()).toEqual(['criterion X']);
+    });
+
+    it('does not update subTasks when restored state has an empty array', () => {
+      const original = gm.getGoals().subTasks;
+      gm.restore({ primary: 'Some goal', subTasks: [], status: GoalStatus.ACTIVE, successCriteria: [] });
+      expect(gm.getGoals().subTasks).toEqual(original);
+    });
+
+    it('ignores an unrecognised status string', () => {
+      gm.restore({ primary: 'goal', subTasks: ['t'], status: 'UNKNOWN_STATUS', successCriteria: [] });
+      // Status should remain at its previous value (ACTIVE)
+      expect(gm.getStatus()).toBe(GoalStatus.ACTIVE);
+    });
+
+    it('initialises successCriteria to an empty array when restored with a non-array value', () => {
+      (gm as any).restore({ primary: 'goal', subTasks: ['t'], status: 'ACTIVE', successCriteria: null });
+      expect(gm.getSuccessCriteria()).toEqual([]);
+    });
+  });
 });

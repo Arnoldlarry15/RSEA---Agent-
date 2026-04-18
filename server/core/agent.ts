@@ -11,6 +11,8 @@ import { SemanticMemory } from '../memory/semantic';
 import { StrategicMemory } from '../memory/strategic';
 import { MemoryRetriever } from '../memory/retriever';
 import { PatternExtractor } from '../memory/patterns';
+import { runtimeEvents } from './runtime/events';
+import { AgentStatePersistence } from './runtime/persistence';
 
 export class Agent {
   private llm: LLMInterface;
@@ -35,6 +37,12 @@ export class Agent {
   private cycleCount: number = 0;
   private static readonly PATTERN_EXTRACT_EVERY_N_CYCLES = 5;
 
+  /** Last plan produced by the Controller — persisted for restart recovery. */
+  private lastActivePlan: any[] | null = null;
+
+  /** Persistence layer for cross-restart state survival. */
+  private persistence: AgentStatePersistence;
+
   constructor() {
     this.llm = new LLMInterface();
     this.memory = new MemorySystem();
@@ -53,6 +61,17 @@ export class Agent {
 
     this.reflector = new Reflector(this.llm, this.memory, this.goals);
     this.controller = new Controller(this.llm, this.memory, this.retriever);
+
+    // Initialise persistence and attempt to restore state from a previous run
+    this.persistence = new AgentStatePersistence(this.memory);
+    const savedState = this.persistence.load();
+    if (savedState) {
+      this.goals.restore(savedState.goals);
+      if (savedState.activePlan) {
+        this.lastActivePlan = savedState.activePlan;
+      }
+      logEvent('agent_state_restored', { savedAt: savedState.savedAt });
+    }
   }
 
   async runCycle(): Promise<AgentOutput> {
@@ -94,6 +113,10 @@ export class Agent {
       if (this.consecutiveFailures >= Agent.MAX_CONSECUTIVE_FAILURES) {
         this.goals.markFailed();
         logEvent('agent_goal_failed', { reason: 'max_consecutive_failures' });
+        runtimeEvents.emitFailureSpike({
+          consecutiveFailures: this.consecutiveFailures,
+          lastError: err.message || String(err),
+        });
       }
       throw err;
     }
@@ -120,6 +143,28 @@ export class Agent {
       }
     }
 
+    // Persist state so the agent survives restarts
+    this.lastActivePlan = cycleData.plan;
+    this.persistence.save({
+      goals: {
+        primary: currentGoals.primary,
+        subTasks: currentGoals.subTasks,
+        status: this.goals.getStatus(),
+        successCriteria: this.goals.getSuccessCriteria(),
+      },
+      activePlan: this.lastActivePlan,
+      strategyVersion: null,
+      savedAt: new Date().toISOString(),
+    });
+
+    // Emit opportunity_detected whenever the spotter returns actionable observations
+    if (cycleData.observations && cycleData.observations.length > 0) {
+      runtimeEvents.emitOpportunityDetected({
+        opportunityCount: cycleData.observations.length,
+        observations: cycleData.observations,
+      });
+    }
+
     this.currentState = AgentState.IDLE;
     return {
       observations: cycleData.observations,
@@ -138,6 +183,7 @@ export class Agent {
     this.manualInstructions.push(text);
     this.memory.addEvent({ type: 'user_command', data: text });
     logEvent('command', text);
+    runtimeEvents.emitNewInput({ instruction: text, timestamp: new Date().toISOString() });
   }
 
   processInput(input: AgentInput) {
