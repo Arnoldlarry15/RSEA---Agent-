@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
 
 export interface LogEntry {
   time: string;
@@ -27,23 +28,47 @@ export function subscribeToLogs(fn: LogSubscriber): () => void {
   return () => subscribers.delete(fn);
 }
 
-/** Active trace ID for the current async context.  Set via setTraceId(). */
-let activeTraceId: string | undefined;
+// SEC-7: Use AsyncLocalStorage so trace IDs are scoped to each async call chain
+// and do not bleed between concurrent requests or agent cycles.
+interface TraceContext { traceId: string }
+const traceStorage = new AsyncLocalStorage<TraceContext>();
 
 export function setTraceId(id: string | undefined) {
-  activeTraceId = id;
+  const store = traceStorage.getStore();
+  if (store) {
+    store.traceId = id ?? '';
+  }
+  // When called outside an ALS context (e.g. from synchronous setup code) we
+  // fall back to the module-level variable so existing call-sites keep working.
+  _fallbackTraceId = id;
 }
 
 export function getTraceId(): string | undefined {
-  return activeTraceId;
+  return traceStorage.getStore()?.traceId ?? _fallbackTraceId;
 }
 
 /** Generate a new random trace ID and activate it. Returns the new ID. */
 export function newTraceId(): string {
   const id = randomUUID();
-  activeTraceId = id;
+  const store = traceStorage.getStore();
+  if (store) {
+    store.traceId = id;
+  } else {
+    _fallbackTraceId = id;
+  }
   return id;
 }
+
+/**
+ * Run a callback inside a fresh trace context.
+ * All logEvent() calls within `fn` will automatically use `traceId`.
+ */
+export function runWithTraceId<T>(traceId: string, fn: () => T): T {
+  return traceStorage.run({ traceId }, fn);
+}
+
+/** Module-level fallback for code paths that run outside an ALS context. */
+let _fallbackTraceId: string | undefined;
 
 /** Lazy verbosity read so tests can set VERBOSITY_LEVEL before importing this module. */
 function getVerbosity(): string {
@@ -69,7 +94,7 @@ export function logEvent(stage: string, data: any, traceId?: string) {
     time: new Date().toISOString(),
     stage,
     data,
-    traceId: traceId ?? activeTraceId,
+    traceId: traceId ?? getTraceId(),
   };
 
   // Notify real-time subscribers before file I/O

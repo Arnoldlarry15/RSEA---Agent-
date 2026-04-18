@@ -25,10 +25,19 @@ COPY tsconfig.json ./
 # Create the data directory before dropping privileges
 RUN mkdir -p /app/data
 
+# DEPLOY-7: Declare /app/data as a volume so orchestrators know persistence is required.
+# When running without docker-compose, always mount a volume here to avoid data loss.
+VOLUME ["/app/data"]
+
 # Run as a non-root user
 RUN addgroup -S rsea && adduser -S rsea -G rsea && chown -R rsea:rsea /app/data
 USER rsea
 
 ENV NODE_ENV=production
 EXPOSE 3000
+
+# DEPLOY-3: Health check using the /api/health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:3000/api/health || exit 1
+
 CMD ["npx", "tsx", "server.ts"]
