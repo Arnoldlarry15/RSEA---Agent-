@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import express from 'express';
+import express, { Request } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { timingSafeEqual } from 'crypto';
@@ -89,9 +89,9 @@ async function startServer() {
   const COMMAND_RATE_LIMIT = 20;
   const COMMAND_RATE_WINDOW_MS = 60_000;
 
-  function getClientIp(req: any): string {
+  function getClientIp(req: Request): string {
     // req.ip respects the trust proxy setting; fall back to socket address if not set.
-    return (req.ip as string | undefined) || req.socket?.remoteAddress || 'unknown';
+    return req.ip || req.socket?.remoteAddress || 'unknown';
   }
 
   function isRateLimited(ip: string): boolean {
