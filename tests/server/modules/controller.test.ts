@@ -153,6 +153,7 @@ describe('Controller', () => {
 
     it('calls generateModifiers on the scheduled cycle when opted-in', async () => {
       process.env.ALLOW_SELF_MODIFICATION = 'true';
+      process.env.DRY_RUN = 'false';
       // cycleCount is 0 at construction → 0 % 10 === 0 → scheduled
       await controller.selfModifyPrompts([{ ctx: 1 }]);
       expect(llm.generateModifiers).toHaveBeenCalled();
@@ -170,6 +171,7 @@ describe('Controller', () => {
 
     it('updates globalPromptModifiers on success', async () => {
       process.env.ALLOW_SELF_MODIFICATION = 'true';
+      process.env.DRY_RUN = 'false';
       await controller.selfModifyPrompts([]);
       expect(controller.getModifiers()).toEqual(['be bold', 'preserve capital']);
     });

@@ -88,7 +88,7 @@ export class Controller {
       return;
     }
 
-    const dryRun = (process.env.DRY_RUN ?? '').toLowerCase() === 'true';
+    const dryRun = (process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false';
     if (dryRun) {
       logEvent('self_modification_skipped', { reason: 'DRY_RUN=true; skipping self-modification' });
       return;

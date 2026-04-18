@@ -30,7 +30,7 @@ RUN mkdir -p /app/data
 VOLUME ["/app/data"]
 
 # Run as a non-root user
-RUN addgroup -S rsea && adduser -S rsea -G rsea && chown -R rsea:rsea /app/data
+RUN addgroup -S rsea && adduser -S rsea -G rsea && chown -R rsea:rsea /app
 USER rsea
 
 ENV NODE_ENV=production

@@ -32,7 +32,14 @@ async function startServer() {
 
   console.log(`[INIT] Starting RSEA Server in ${process.env.NODE_ENV || 'development'} mode`);
 
-  app.use(express.json());
+  // Trust the first proxy hop (e.g. nginx / Render / Railway) when explicitly opted in.
+  // Set TRUST_PROXY=1 (or a specific IP/CIDR) in production behind a reverse proxy.
+  const trustProxy = process.env.TRUST_PROXY;
+  if (trustProxy) {
+    app.set('trust proxy', isNaN(Number(trustProxy)) ? trustProxy : Number(trustProxy));
+  }
+
+  app.use(express.json({ limit: '100kb' }));
 
   // SEC-8: Security response headers — applied to every response
   app.use((_req, res, next) => {
@@ -77,10 +84,15 @@ async function startServer() {
     next();
   });
 
-  // Simple in-memory rate limiter for POST /api/command: max 20 requests per IP per minute
+  // Simple in-memory rate limiter for POST /api/command and POST /api/control: max 20 requests per IP per minute
   const commandRateLimitMap = new Map<string, { count: number; resetAt: number }>();
   const COMMAND_RATE_LIMIT = 20;
   const COMMAND_RATE_WINDOW_MS = 60_000;
+
+  function getClientIp(req: any): string {
+    // req.ip respects the trust proxy setting; fall back to socket address if not set.
+    return (req.ip as string | undefined) || req.socket?.remoteAddress || 'unknown';
+  }
 
   function isRateLimited(ip: string): boolean {
     const now = Date.now();
@@ -200,7 +212,7 @@ async function startServer() {
 
   app.post('/api/command', requireAuth, (req, res) => {
     try {
-      const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+      const ip = getClientIp(req);
       if (isRateLimited(ip)) {
         return res.status(429).json({ error: 'Rate limit exceeded: max 20 requests per minute per IP' });
       }
@@ -221,6 +233,10 @@ async function startServer() {
 
   app.post('/api/control', requireAuth, (req, res) => {
     try {
+      const ip = getClientIp(req);
+      if (isRateLimited(ip)) {
+        return res.status(429).json({ error: 'Rate limit exceeded: max 20 requests per minute per IP' });
+      }
       const { action, interval } = req.body;
       if (action === 'start') {
         agentLoop.start();
