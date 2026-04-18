@@ -42,6 +42,14 @@ export class MemorySystem {
       CREATE VIRTUAL TABLE IF NOT EXISTS vec_long_term USING vec0(
         embedding float[768]
       );
+
+      CREATE TABLE IF NOT EXISTS session_memory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        data TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_memory_session_id ON session_memory(session_id);
     `);
   }
 
@@ -168,6 +176,36 @@ export class MemorySystem {
    *  Useful for de-prioritising stale knowledge over time. */
   applyDecay(factor: number = 0.95) {
     this.db.prepare('UPDATE long_term SET importance = MAX(0.01, importance * ?)').run(factor);
+  }
+
+  // ── Session-level memory (conversation / thread scoped) ──────────────────────
+
+  /** Append an event to the session-scoped conversation log. */
+  addSessionEvent(sessionId: string, event: any) {
+    const timestamp = new Date().toISOString();
+    const dataStr = JSON.stringify(event);
+    this.db.prepare(
+      'INSERT INTO session_memory (session_id, timestamp, data) VALUES (?, ?, ?)'
+    ).run(sessionId, timestamp, dataStr);
+  }
+
+  /** Return all events recorded for a given session, oldest first. */
+  getSessionContext(sessionId: string): any[] {
+    const rows = this.db.prepare(
+      'SELECT timestamp, data FROM session_memory WHERE session_id = ? ORDER BY id ASC'
+    ).all(sessionId) as any[];
+    return rows.map(row => {
+      try {
+        return { ...JSON.parse(row.data), timestamp: row.timestamp };
+      } catch (e) {
+        return { data: row.data, timestamp: row.timestamp };
+      }
+    });
+  }
+
+  /** Delete all events for a given session (ephemeral clean-up). */
+  clearSession(sessionId: string) {
+    this.db.prepare('DELETE FROM session_memory WHERE session_id = ?').run(sessionId);
   }
 
   healthCheck(): boolean {

@@ -1,4 +1,8 @@
 import { Agent } from './agent';
+import { newTraceId, setTraceId, logEvent } from '../utils/logger';
+
+/** Maximum wall-clock time (ms) a single agent cycle may run before being killed. */
+const CYCLE_TIMEOUT_MS = parseInt(process.env.CYCLE_TIMEOUT_MS ?? '30000', 10);
 
 export class AgentLoop {
   private agent: Agent;
@@ -6,6 +10,9 @@ export class AgentLoop {
   private interval: number = 10000;
   private timer: NodeJS.Timeout | null = null;
   
+  /** Per-cycle kill switch: set to true to halt the loop immediately on next step. */
+  private killSwitch: boolean = false;
+
   // Telemetry for Debugging
   private cycleCount: number = 0;
   private lastError: string | null = null;
@@ -21,16 +28,27 @@ export class AgentLoop {
   }
 
   async step() {
+    if (this.killSwitch) {
+      logEvent('loop_kill_switch', { reason: 'Kill switch is active — cycle skipped' });
+      return;
+    }
+    const traceId = newTraceId();
     const startTime = Date.now();
-    console.log("\n--- New Cycle ---");
+    console.log("\n--- New Cycle ---", `[trace:${traceId}]`);
     try {
       this.cycleCount++;
-      await this.agent.runCycle();
+      // Race the cycle against a hard timeout to prevent runaway loops
+      const cyclePromise = this.agent.runCycle();
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Cycle timeout after ${CYCLE_TIMEOUT_MS}ms`)), CYCLE_TIMEOUT_MS)
+      );
+      await Promise.race([cyclePromise, timeoutPromise]);
       this.lastError = null;
       this.consecutiveFailures = 0;
     } catch (err: any) {
       this.consecutiveFailures++;
       this.lastError = err.message || String(err);
+      logEvent('loop_cycle_error', { error: this.lastError, traceId, consecutiveFailures: this.consecutiveFailures });
       console.error("Error in agent cycle:", err);
 
       // Apply backoff when failures accumulate — widen the next sleep window
@@ -39,6 +57,8 @@ export class AgentLoop {
       }
     } finally {
       this.lastExecutionTime = Date.now() - startTime;
+      // Clear the module-level trace after the cycle so it doesn't bleed into unrelated code
+      setTraceId(undefined);
     }
   }
 
@@ -75,6 +95,22 @@ export class AgentLoop {
     return this.agent;
   }
 
+  /** Activates the kill switch — the next scheduled cycle will be skipped. */
+  activateKillSwitch() {
+    this.killSwitch = true;
+    logEvent('kill_switch_activated', { cycleCount: this.cycleCount });
+  }
+
+  /** Deactivates the kill switch and resumes normal cycling. */
+  deactivateKillSwitch() {
+    this.killSwitch = false;
+    logEvent('kill_switch_deactivated', { cycleCount: this.cycleCount });
+  }
+
+  isKillSwitchActive(): boolean {
+    return this.killSwitch;
+  }
+
   getTelemetry() {
     return {
       isRunning: this.isRunning,
@@ -83,7 +119,8 @@ export class AgentLoop {
       lastError: this.lastError,
       lastExecutionTime: this.lastExecutionTime,
       state: this.agent.getState(),
-      consecutiveFailures: this.consecutiveFailures
+      consecutiveFailures: this.consecutiveFailures,
+      killSwitch: this.killSwitch,
     };
   }
 }

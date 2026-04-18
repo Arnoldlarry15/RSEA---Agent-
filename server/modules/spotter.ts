@@ -1,3 +1,12 @@
+/** Timeout (ms) for outbound market-data fetches. */
+const SPOTTER_FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS ?? '10000', 10);
+
+function spotterFetch(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SPOTTER_FETCH_TIMEOUT_MS);
+  return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 export class Spotter {
   /**
    * Scans for incoming data (Integrates real price data and simulation)
@@ -9,7 +18,7 @@ export class Spotter {
 
     let btcPrice = "N/A";
     try {
-      const btcRes = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
+      const btcRes = await spotterFetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
       const btcData = await btcRes.json();
       btcPrice = btcData.price;
     } catch (err) {
@@ -26,7 +35,7 @@ export class Spotter {
       timestamp: now
     };
     try {
-      const ethRes = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&include_24hr_change=true');
+      const ethRes = await spotterFetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&include_24hr_change=true');
       const ethData = await ethRes.json();
       const ethPrice = ethData?.ethereum?.usd;
       const ethChange = ethData?.ethereum?.usd_24h_change;
@@ -62,7 +71,7 @@ export class Spotter {
     const signalFeedUrl = process.env.SIGNAL_FEED_URL;
     if (signalFeedUrl) {
       try {
-        const feedRes = await fetch(signalFeedUrl);
+        const feedRes = await spotterFetch(signalFeedUrl);
         const feedData = await feedRes.json();
         const items: any[] = Array.isArray(feedData) ? feedData : (feedData.observations ?? feedData.items ?? feedData.signals ?? []);
         if (items.length > 0) {
