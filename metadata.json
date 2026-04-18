@@ -1,6 +1,6 @@
 {
   "name": "RSEA: Autonomous Agent Framework",
   "description": "A modular, simulated AI agent framework following the Research, Scan, Execute, Act (RSEA) architecture with a persistent loop, cognition layer, and safe simulation environment.",
-  "requestFramePermissions": [],
-  "majorCapabilities": []
+  "requestFramePermissions": ["read_messages", "send_messages", "webhooks"],
+  "majorCapabilities": ["autonomous_agent", "market_analysis", "task_execution", "webhook_receiver"]
 }

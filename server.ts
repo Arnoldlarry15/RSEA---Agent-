@@ -8,8 +8,8 @@ import { createServer as createHttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { AgentLoop } from './server/core/loop';
 import { getLogs, subscribeToLogs, getLogsByTraceId } from './server/utils/logger';
-import { ingestWebhookEvent } from './server/adapters/moltbook';
-import { VERBOSITY, DECISION_AGGRESSIVENESS, CONFIDENCE_THRESHOLD } from './server/core/config';
+import { ingestWebhookEvent, registerAgent } from './server/adapters/moltbook';
+import { VERBOSITY, getDecisionAggressiveness, getConfidenceThreshold } from './server/core/config';
 
 async function startServer() {
   const app = express();
@@ -198,8 +198,8 @@ async function startServer() {
         },
         config: {
           verbosity: VERBOSITY,
-          decisionAggressiveness: DECISION_AGGRESSIVENESS,
-          confidenceThreshold: CONFIDENCE_THRESHOLD,
+          decisionAggressiveness: getDecisionAggressiveness(),
+          confidenceThreshold: getConfidenceThreshold(),
           dryRun: (process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false',
           killSwitch: agentLoop.isKillSwitchActive(),
         },
@@ -321,6 +321,18 @@ async function startServer() {
     console.log(`RSEA Server running at http://localhost:${PORT}`);
     // Start agent after server is successfully listening
     agentLoop.start();
+    // Register this agent with Moltbook if the adapter is configured
+    if (process.env.MOLTBOOK_API_URL && process.env.MOLTBOOK_API_TOKEN) {
+      const agentMeta = {
+        name: 'RSEA Agent',
+        version: '1.0.0',
+        capabilities: ['autonomous_agent', 'market_analysis', 'task_execution', 'webhook_receiver'],
+        webhookUrl: process.env.APP_URL ? `${process.env.APP_URL}/api/webhooks/moltbook` : undefined,
+      };
+      registerAgent(agentMeta).catch((err: Error) => {
+        console.warn('[Moltbook] Agent registration failed (non-fatal):', err.message);
+      });
+    }
   });
 
   // DEPLOY-4: Graceful shutdown — stop agent loop and drain connections before exiting
