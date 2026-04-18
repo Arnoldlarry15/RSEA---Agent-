@@ -361,7 +361,8 @@ Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.`;
       }
     }
 
-    // Anthropic and Grok do not have public embedding APIs – use pseudo-vector
-    return Array(768).fill(0).map(() => Math.random() - 0.5);
+    // Anthropic and Grok do not have public embedding APIs – return a zero-vector
+    console.warn('[LLM] embed() is not supported for provider "' + this.provider + '". Returning zero-vector; semantic recall will be disabled.');
+    return new Array(768).fill(0);
   }
 }

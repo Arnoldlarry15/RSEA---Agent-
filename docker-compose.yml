@@ -16,10 +16,26 @@ services:
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3}
       - OLLAMA_EMBED_MODEL=${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      # Mainnet-Protocol gate: set DRY_RUN=false to enable live execution
+      - DRY_RUN=${DRY_RUN:-true}
+      # Safety flags — disabled by default for security
+      - ALLOW_CODE_EVAL=${ALLOW_CODE_EVAL:-false}
+      - ALLOW_SELF_MODIFICATION=${ALLOW_SELF_MODIFICATION:-false}
+      # Optional: custom signal feed URL
+      - SIGNAL_FEED_URL=${SIGNAL_FEED_URL:-}
+      # Optional: Moltbook adapter configuration
+      - MOLTBOOK_API_URL=${MOLTBOOK_API_URL:-}
+      - MOLTBOOK_API_TOKEN=${MOLTBOOK_API_TOKEN:-}
+      - MOLTBOOK_WEBHOOK_SECRET=${MOLTBOOK_WEBHOOK_SECRET:-}
       # Optional: comma-separated list of allowed outbound hostnames for api_fetch
       - ALLOWED_FETCH_HOSTS=${ALLOWED_FETCH_HOSTS:-}
       # Optional: comma-separated allowlist of commands for system_command executor
       - ALLOWED_COMMANDS=${ALLOWED_COMMANDS:-}
+      # Behavior tuning
+      - VERBOSITY_LEVEL=${VERBOSITY_LEVEL:-normal}
+      - CYCLE_TIMEOUT_MS=${CYCLE_TIMEOUT_MS:-30000}
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-60}
+      - DECISION_AGGRESSIVENESS=${DECISION_AGGRESSIVENESS:-0.5}
     volumes:
       - rsea-data:/app/data
     restart: unless-stopped

@@ -1,4 +1,4 @@
-import { CONFIDENCE_THRESHOLD, DECISION_AGGRESSIVENESS } from './config';
+import { getConfidenceThreshold, getDecisionAggressiveness } from './config';
 
 export interface Action {
   action: string;
@@ -15,6 +15,8 @@ export class RulesEngine {
    */
   apply(scoredItems: any[]): Action[] {
     const actions: Action[] = [];
+    const CONFIDENCE_THRESHOLD = getConfidenceThreshold();
+    const DECISION_AGGRESSIVENESS = getDecisionAggressiveness();
 
     for (const item of scoredItems) {
       // Threshold gatekeeping — respects the tunable confidence threshold

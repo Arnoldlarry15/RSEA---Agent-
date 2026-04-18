@@ -24,9 +24,10 @@ async function startServer() {
     process.exit(1);
   }
 
-  // SEC-4: Warn loudly when Moltbook webhook secret is absent in production
-  if (isProduction && !process.env.MOLTBOOK_WEBHOOK_SECRET) {
-    console.warn('[WARN] MOLTBOOK_WEBHOOK_SECRET is not set. Incoming Moltbook webhooks will not be authenticated. Set this variable in production.');
+  // SEC-4: Fail fast in production when Moltbook is configured without webhook secret
+  if (isProduction && process.env.MOLTBOOK_API_URL && !process.env.MOLTBOOK_WEBHOOK_SECRET) {
+    console.error('[FATAL] MOLTBOOK_WEBHOOK_SECRET is required in production when MOLTBOOK_API_URL is set. Incoming Moltbook webhooks cannot be authenticated without it.');
+    process.exit(1);
   }
 
   console.log(`[INIT] Starting RSEA Server in ${process.env.NODE_ENV || 'development'} mode`);
@@ -76,6 +77,23 @@ async function startServer() {
     next();
   });
 
+  // Simple in-memory rate limiter for POST /api/command: max 20 requests per IP per minute
+  const commandRateLimitMap = new Map<string, { count: number; resetAt: number }>();
+  const COMMAND_RATE_LIMIT = 20;
+  const COMMAND_RATE_WINDOW_MS = 60_000;
+
+  function isRateLimited(ip: string): boolean {
+    const now = Date.now();
+    const entry = commandRateLimitMap.get(ip);
+    if (!entry || now > entry.resetAt) {
+      commandRateLimitMap.set(ip, { count: 1, resetAt: now + COMMAND_RATE_WINDOW_MS });
+      return false;
+    }
+    if (entry.count >= COMMAND_RATE_LIMIT) return true;
+    entry.count++;
+    return false;
+  }
+
   // Initialize Agent
   const agentLoop = new AgentLoop();
 
@@ -118,13 +136,6 @@ async function startServer() {
         version: '1.0.0',
         uptime: process.uptime(),
         goals: agentLoop.getAgent().getGoals().getGoals(),
-        config: {
-          verbosity: VERBOSITY,
-          decisionAggressiveness: DECISION_AGGRESSIVENESS,
-          confidenceThreshold: CONFIDENCE_THRESHOLD,
-          dryRun: (process.env.DRY_RUN ?? '').toLowerCase() === 'true',
-          killSwitch: agentLoop.isKillSwitchActive(),
-        }
       });
     } catch (err) {
       res.status(500).json({ error: 'Failed to generate status' });
@@ -173,6 +184,13 @@ async function startServer() {
           shortTermCount: agent.getMemory().getSnapshot().shortTerm.length,
           longTermCount: Object.keys(agent.getMemory().getSnapshot().longTerm).length
         },
+        config: {
+          verbosity: VERBOSITY,
+          decisionAggressiveness: DECISION_AGGRESSIVENESS,
+          confidenceThreshold: CONFIDENCE_THRESHOLD,
+          dryRun: (process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false',
+          killSwitch: agentLoop.isKillSwitchActive(),
+        },
         nodeEnv: process.env.NODE_ENV || 'development'
       });
     } catch (err) {
@@ -182,6 +200,10 @@ async function startServer() {
 
   app.post('/api/command', requireAuth, (req, res) => {
     try {
+      const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+      if (isRateLimited(ip)) {
+        return res.status(429).json({ error: 'Rate limit exceeded: max 20 requests per minute per IP' });
+      }
       const { command } = req.body;
       if (!command || typeof command !== 'string') {
         return res.status(400).json({ error: typeof command !== 'string' ? 'Command must be a string' : 'No command provided' });

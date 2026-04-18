@@ -1,4 +1,5 @@
 import { logEvent } from '../utils/logger';
+import { isSsrfTarget } from '../utils/ssrf';
 
 /** Timeout (ms) for outbound market-data fetches. */
 const SPOTTER_FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS ?? '10000', 10);
@@ -72,6 +73,9 @@ export class Spotter {
 
     const signalFeedUrl = process.env.SIGNAL_FEED_URL;
     if (signalFeedUrl) {
+      if (isSsrfTarget(signalFeedUrl)) {
+        console.warn('[Spotter] SIGNAL_FEED_URL targets a private/loopback address or is malformed — skipping fetch, using simulated observations.');
+      } else {
       try {
         const feedRes = await spotterFetch(signalFeedUrl);
         const feedData = await feedRes.json();
@@ -101,6 +105,7 @@ export class Spotter {
       } catch (err) {
         console.warn("Failed to fetch signal feed from SIGNAL_FEED_URL, using simulated observations.");
       }
+      } // end isSsrfTarget else block
     }
 
     // Combine real data and signal observations

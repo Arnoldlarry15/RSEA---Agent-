@@ -1,11 +1,17 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { RulesEngine } from '../../../server/core/rules';
 
 describe('RulesEngine', () => {
   let engine: RulesEngine;
 
   beforeEach(() => {
+    // Set DECISION_AGGRESSIVENESS=1 so tests are not sensitive to the default value
+    process.env.DECISION_AGGRESSIVENESS = '1';
     engine = new RulesEngine();
+  });
+
+  afterEach(() => {
+    delete process.env.DECISION_AGGRESSIVENESS;
   });
 
   it('blocks items with score at or below 60', () => {

@@ -18,6 +18,12 @@ describe('Executor', () => {
   beforeEach(() => {
     executor = new Executor();
     delete process.env.ALLOWED_COMMANDS;
+    // Disable dry-run mode for all executor tests (safe default is true at runtime)
+    process.env.DRY_RUN = 'false';
+  });
+
+  afterEach(() => {
+    delete process.env.DRY_RUN;
   });
 
   // ---------------------------------------------------------------------------

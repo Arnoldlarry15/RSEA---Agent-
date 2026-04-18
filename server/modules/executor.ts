@@ -2,43 +2,22 @@ import vm from 'vm';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { logEvent } from '../utils/logger';
+import { isSsrfTarget } from '../utils/ssrf';
 import { sendMessage as moltbookSend, fetchThread as moltbookFetch } from '../adapters/moltbook';
 
 const execFileAsync = promisify(execFile);
 
-/** Hostnames / IP patterns that must never be reached by api_fetch (SSRF guard). */
-const IP_OCTET = '(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)';
-const PRIVATE_HOST_PATTERNS: RegExp[] = [
-  /^localhost$/i,
-  new RegExp(`^127\\.${IP_OCTET}\\.${IP_OCTET}\\.${IP_OCTET}$`),    // 127.0.0.0/8 loopback
-  /^0\.0\.0\.0$/,
-  /^::1$/,                                                              // IPv6 loopback
-  new RegExp(`^10\\.${IP_OCTET}\\.${IP_OCTET}\\.${IP_OCTET}$`),       // RFC-1918 10/8
-  new RegExp(`^172\\.(1[6-9]|2[0-9]|3[0-1])\\.${IP_OCTET}\\.${IP_OCTET}$`),  // RFC-1918 172.16/12
-  new RegExp(`^192\\.168\\.${IP_OCTET}\\.${IP_OCTET}$`),              // RFC-1918 192.168/16
-  new RegExp(`^169\\.254\\.${IP_OCTET}\\.${IP_OCTET}$`),              // Link-local / cloud metadata
-  /^fd[0-9a-f]{2}:/i,                                                  // IPv6 ULA fc00::/7
-];
-
-/** Returns true when the URL targets a private/loopback address or uses a disallowed scheme. */
-function isSsrfTarget(rawUrl: string): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return true; // Malformed URL — block it
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return true; // Only HTTP(S) outbound requests are allowed
-  }
-  return PRIVATE_HOST_PATTERNS.some((p) => p.test(parsed.hostname));
-}
-
 /** Maximum number of characters accepted by the code_eval executor. */
 const MAX_CODE_SIZE = 10_000;
 
-/** When DRY_RUN=true the executor logs every action but skips actual execution. */
-const DRY_RUN = (process.env.DRY_RUN ?? '').toLowerCase() === 'true';
+/**
+ * Mainnet-Protocol gate: DRY_RUN defaults to true for safety.
+ * Operators must explicitly set DRY_RUN=false to enable live execution.
+ * Read dynamically so tests can override process.env.DRY_RUN at runtime.
+ */
+function isDryRun(): boolean {
+  return (process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false';
+}
 
 /** Safe argument pattern: alphanumeric, hyphens, dots, underscores, forward slashes, @, = */
 const SAFE_ARG_PATTERN = /^[a-zA-Z0-9\-._/@=:,]+$/;
@@ -102,10 +81,10 @@ export class Executor {
     const results = [];
     
     for (const action of actions) {
-      logEvent('executor_start', { action, dryRun: DRY_RUN });
+      logEvent('executor_start', { action, dryRun: isDryRun() });
 
       // In dry-run mode skip actual execution and return a simulated result
-      if (DRY_RUN) {
+      if (isDryRun()) {
         results.push({
           status: 'dry_run',
           timestamp: new Date().toISOString(),

@@ -28,7 +28,7 @@ export class Reflector {
 
     // Determine if reflection is necessary: always reflect on CRITICAL/Anomaly results,
     // otherwise reflect on a deterministic schedule (every N cycles).
-    const requiresReflection = results.some((r: any) => r.priority === 'CRITICAL' || r.outcome.includes('Anomaly'));
+    const requiresReflection = results.some((r: any) => r.priority === 'CRITICAL' || r.status === 'anomaly' || (typeof r.outcome === 'string' && r.outcome.includes('Anomaly')));
     const scheduledReflection = (this.cycleCount % Reflector.REFLECT_EVERY_N_CYCLES) === 0;
     if (!requiresReflection && !scheduledReflection) {
       logEvent('reflect', { status: 'skipped', reason: 'low_priority_results', cycle: this.cycleCount });
