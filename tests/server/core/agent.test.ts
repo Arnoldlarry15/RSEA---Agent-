@@ -45,6 +45,8 @@ vi.mock('../../../server/core/goals', () => {
     markCompleted = vi.fn();
     markFailed = vi.fn();
     getStatus = vi.fn().mockReturnValue('ACTIVE');
+    getSuccessCriteria = vi.fn().mockReturnValue([]);
+    restore = vi.fn();
   }
   return { GoalManager };
 });

@@ -72,4 +72,22 @@ export class GoalManager {
   getSuccessCriteria(): string[] {
     return [...this.successCriteria];
   }
+
+  /**
+   * Rehydrates the GoalManager from a previously persisted snapshot.
+   * Used on startup to restore the agent's goal state after a restart.
+   */
+  restore(state: { primary: string; subTasks: string[]; status: string; successCriteria: string[] }): void {
+    if (state.primary) {
+      this.primaryGoal = state.primary;
+    }
+    if (state.subTasks && state.subTasks.length > 0) {
+      this.activeSubTasks = state.subTasks;
+    }
+    const validStatuses = Object.values(GoalStatus) as string[];
+    if (validStatuses.includes(state.status)) {
+      this.status = state.status as GoalStatus;
+    }
+    this.successCriteria = Array.isArray(state.successCriteria) ? state.successCriteria : [];
+  }
 }
