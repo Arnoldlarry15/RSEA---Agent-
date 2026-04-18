@@ -16,6 +16,11 @@ const ALLOWED_TOOLS = new Set([
   'system_command',
   'moltbook_send_message',
   'moltbook_fetch_thread',
+  // Tool-registry backed tools
+  'http_request',
+  'file_read',
+  'file_write',
+  'webhook',
 ]);
 
 /** Parameters that must be present (non-null/undefined) for a given tool. */
@@ -25,6 +30,10 @@ const REQUIRED_PARAMS: Record<string, string[]> = {
   system_command: ['command'],
   moltbook_send_message: ['threadId', 'content'],
   moltbook_fetch_thread: ['threadId'],
+  http_request: ['url'],
+  file_read: ['path'],
+  file_write: ['path', 'content'],
+  webhook: ['url'],
 };
 
 /**
