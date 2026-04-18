@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Spotter } from '../../../server/modules/spotter';
 
+vi.mock('../../../server/utils/logger', () => ({
+  logEvent: vi.fn(),
+}));
+
 describe('Spotter', () => {
   let spotter: Spotter;
 

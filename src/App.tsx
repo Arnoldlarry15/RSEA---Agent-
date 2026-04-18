@@ -189,6 +189,33 @@ export default function App() {
     }
   }, [logs]);
 
+  /**
+   * Maps a log stage name to its Tailwind color classes for the audit badge.
+   * Covers the actual stage names emitted by the server modules.
+   */
+  const getStageColor = (stage: string): string => {
+    if (stage === 'observe') return 'text-immersive-cyan border-immersive-cyan/20 bg-immersive-cyan/5';
+    if (stage.includes('reflect')) return 'text-blue-400 border-blue-500/20 bg-blue-500/5';
+    if (stage.includes('executor') || stage === 'act') return 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5';
+    if (stage.includes('sniper') || stage.includes('rule') || stage.includes('validator') || stage === 'decide') return 'text-immersive-amber border-immersive-amber/20 bg-immersive-amber/5';
+    if (stage.includes('plan') || stage === 'think_and_act' || stage === 'think') return 'text-purple-400 border-purple-500/20 bg-purple-500/5';
+    return 'text-white/40 border-white/10 bg-white/5';
+  };
+
+  /**
+   * Returns true when the latest log entry belongs to the given cognitive node.
+   */
+  const isStageActive = (nodeId: string, latestStage: string): boolean => {
+    switch (nodeId) {
+      case 'observe':  return latestStage === 'observe';
+      case 'think':    return latestStage.includes('plan') || latestStage === 'think_and_act' || latestStage === 'think';
+      case 'decide':   return latestStage.includes('sniper') || latestStage.includes('rule') || latestStage.includes('validator') || latestStage === 'decide';
+      case 'act':      return latestStage.includes('executor') || latestStage === 'act';
+      case 'reflect':  return latestStage.includes('reflect');
+      default:         return false;
+    }
+  };
+
   const renderDataPreview = (data: any) => {
     const safeString = (val: any): string => {
       if (val === null || val === undefined) return '';
@@ -298,7 +325,7 @@ export default function App() {
                 <motion.div 
                   className="h-full bg-immersive-amber"
                   initial={{ width: 0 }}
-                  animate={{ width: '65%' }}
+                  animate={{ width: `${Math.min((memory?.longTerm ? Object.keys(memory.longTerm).length : 0) / 100 * 100, 100)}%` }}
                 />
               </div>
             </div>
@@ -330,7 +357,7 @@ export default function App() {
               { id: 'act', label: 'Act', icon: Zap },
               { id: 'reflect', label: 'Reflect', icon: Network }
             ].map((node, i) => {
-              const isActive = logs.length > 0 && logs[0].stage === node.id;
+              const isActive = logs.length > 0 && isStageActive(node.id, logs[0].stage);
               return (
                 <div key={node.id} className="relative flex flex-col items-center">
                   <motion.div 
@@ -376,13 +403,7 @@ export default function App() {
                   className="bg-white/[0.03] p-4 rounded-xl border border-white/5 relative group"
                 >
                   <div className="flex justify-between items-start mb-2">
-                    <span className={`text-[9px] font-mono px-2 py-0.5 rounded border
-                      ${log.stage === 'observe' ? 'text-immersive-cyan border-immersive-cyan/20 bg-immersive-cyan/5' : ''}
-                      ${log.stage === 'think' ? 'text-purple-400 border-purple-500/20 bg-purple-500/5' : ''}
-                      ${log.stage === 'decide' ? 'text-immersive-amber border-immersive-amber/20 bg-immersive-amber/5' : ''}
-                      ${log.stage === 'act' ? 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5' : ''}
-                      ${log.stage.includes('reflect') ? 'text-blue-400 border-blue-500/20 bg-blue-500/5' : ''}
-                    `}>{log.stage.toUpperCase()}</span>
+                    <span className={`text-[9px] font-mono px-2 py-0.5 rounded border ${getStageColor(log.stage)}`}>{log.stage.toUpperCase()}</span>
                     <span className="text-[8px] font-mono opacity-30">{new Date(log.time).toLocaleTimeString([], { hour12: false })}</span>
                   </div>
                   <div className="text-immersive-dim leading-relaxed italic">
@@ -672,11 +693,11 @@ export default function App() {
                     {memory?.shortTerm?.slice().reverse().map((event: any, i: number) => (
                       <div key={i} className="p-3 rounded-xl border border-white/5 bg-white/[0.02] font-mono text-[11px] group">
                         <div className="flex justify-between items-center mb-2">
-                          <span className="text-white/40">{event.type.toUpperCase()}</span>
+                          <span className="text-white/40">{(event.type ?? 'event').toUpperCase()}</span>
                           <span className="text-white/20 text-[9px]">{new Date(event.timestamp).toLocaleTimeString()}</span>
                         </div>
                         <div className="text-immersive-dim truncate group-hover:whitespace-normal group-hover:overflow-visible group-hover:break-all transition-all">
-                          {JSON.stringify(event.data)}
+                          {event.data !== undefined ? JSON.stringify(event.data) : ''}
                         </div>
                       </div>
                     ))}

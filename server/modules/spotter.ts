@@ -1,3 +1,5 @@
+import { logEvent } from '../utils/logger';
+
 /** Timeout (ms) for outbound market-data fetches. */
 const SPOTTER_FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS ?? '10000', 10);
 
@@ -108,6 +110,9 @@ export class Spotter {
       signalObs2,
       ethObs
     ];
+
+    logEvent('observe', { count: data.length, assets: data.map((o: any) => o.asset).filter(Boolean) });
+
     return data;
   }
 }
