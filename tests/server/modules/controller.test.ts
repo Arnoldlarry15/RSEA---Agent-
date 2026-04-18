@@ -46,6 +46,22 @@ vi.mock('../../../server/modules/sniper', () => {
   return { Sniper };
 });
 
+vi.mock('../../../server/core/adversarial/red_team', () => {
+  class RedTeamOrchestrator {
+    run = vi.fn().mockResolvedValue({
+      opportunity: { id: 'obs_1' },
+      plan: [{ action: 'simulate', tool: 'simulate', payload: {} }],
+      attackVectors: ['Liquidity risk'],
+      blockedAttacks: 1,
+      robustnessScore: 80,
+      score: { success_rate: 100, efficiency: 50, risk_score: 0, overall: 80, rounds: 1 },
+      strategyUpdate: 'Stored best strategy: adversarial:best_strategy:obs_1',
+      timestamp: new Date().toISOString(),
+    });
+  }
+  return { RedTeamOrchestrator };
+});
+
 function makeMockLLM(healthOk = true): Partial<LLMInterface> {
   return {
     healthCheck: vi.fn().mockReturnValue(healthOk),
@@ -243,6 +259,27 @@ describe('Controller', () => {
       const changes = history.map((h) => h.change);
       expect(changes).toContain('first');
       expect(changes).toContain('second');
+    });
+  });
+
+  // ── Phase 7: Adversarial Intelligence ─────────────────────────────────────
+
+  describe('runAdversarialCycle', () => {
+    it('returns an AdversarialResult with the expected fields', async () => {
+      const result = await controller.runAdversarialCycle('Maximise profit');
+      expect(result).toHaveProperty('opportunity');
+      expect(result).toHaveProperty('plan');
+      expect(result).toHaveProperty('attackVectors');
+      expect(result).toHaveProperty('robustnessScore');
+      expect(result).toHaveProperty('score');
+    });
+
+    it('does not throw when the Spotter returns an empty observation array', async () => {
+      const { Spotter } = await import('../../../server/modules/spotter');
+      const s = new (Spotter as any)();
+      vi.mocked(s.scan).mockResolvedValue([]);
+
+      await expect(controller.runAdversarialCycle('test objective')).resolves.toBeDefined();
     });
   });
 });

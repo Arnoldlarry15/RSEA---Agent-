@@ -15,6 +15,7 @@ import {
   cloneStrategyConfig,
 } from '../core/strategy/config';
 import { StrategyVersioning } from '../core/strategy/versioning';
+import { RedTeamOrchestrator, AdversarialResult } from '../core/adversarial/red_team';
 
 /**
  * Minimum number of evaluation scores that must be collected before the
@@ -253,5 +254,63 @@ export class Controller {
   /** Returns the full version history from the StrategyVersioning system. */
   getStrategyHistory() {
     return this.strategyVersioning.getHistory();
+  }
+
+  // ── Phase 7: Adversarial Intelligence ─────────────────────────────────────
+
+  /**
+   * Runs a complete adversarial (red-team) cycle against the top observation
+   * from the Spotter.  The 5-step flow is:
+   *
+   *   1. Spotter proposes an opportunity
+   *   2. Sniper creates an execution plan
+   *   3. Red-team Validator tries to break the plan
+   *   4. Evaluator scores robustness
+   *   5. Controller updates strategy based on the composite score
+   *
+   * Best strategies are persisted to long-term memory; failed attack patterns
+   * are also stored so the agent can avoid repeating the same vulnerabilities.
+   *
+   * @param objective  Human-readable description of the current goal (used as
+   *                   a fallback opportunity description when Spotter has no data).
+   */
+  async runAdversarialCycle(objective: string): Promise<AdversarialResult> {
+    const observations = await this.spotter.scan();
+
+    const opportunity = observations[0] ?? {
+      id: `opp_${Date.now()}`,
+      description: objective,
+      tool: 'simulate',
+    };
+
+    const redTeam = new RedTeamOrchestrator(this.llm, this.memory);
+    const result = await redTeam.run(opportunity);
+
+    // Adjust risk_tolerance based on the composite robustness score:
+    //   High robustness → slightly more aggressive (raise tolerance)
+    //   Low robustness  → more conservative (lower tolerance)
+    const { overall } = result.score;
+    if (overall >= 70) {
+      this.updateStrategy(
+        { risk_tolerance: Math.min(1.0, this.strategyConfig.risk_tolerance + 0.05) },
+        `Adversarial cycle: high robustness (${overall})`,
+        overall,
+      );
+    } else if (overall < 40) {
+      this.updateStrategy(
+        { risk_tolerance: Math.max(0.1, this.strategyConfig.risk_tolerance - 0.05) },
+        `Adversarial cycle: low robustness (${overall})`,
+        -overall,
+      );
+    }
+
+    logEvent('adversarial_cycle_complete', {
+      opportunityId: opportunity.id,
+      robustnessScore: result.robustnessScore,
+      overallScore: overall,
+      strategyUpdate: result.strategyUpdate,
+    });
+
+    return result;
   }
 }
