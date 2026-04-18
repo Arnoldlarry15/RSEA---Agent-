@@ -14,11 +14,37 @@ import { VERBOSITY, DECISION_AGGRESSIVENESS, CONFIDENCE_THRESHOLD } from './serv
 async function startServer() {
   const app = express();
   const httpServer = createHttpServer(app);
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT ?? '3000', 10);
+
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  // SEC-5: Fail fast in production when API_SECRET is not set
+  if (isProduction && !process.env.API_SECRET) {
+    console.error('[FATAL] API_SECRET is required in production. Set the API_SECRET environment variable and restart.');
+    process.exit(1);
+  }
+
+  // SEC-4: Warn loudly when Moltbook webhook secret is absent in production
+  if (isProduction && !process.env.MOLTBOOK_WEBHOOK_SECRET) {
+    console.warn('[WARN] MOLTBOOK_WEBHOOK_SECRET is not set. Incoming Moltbook webhooks will not be authenticated. Set this variable in production.');
+  }
 
   console.log(`[INIT] Starting RSEA Server in ${process.env.NODE_ENV || 'development'} mode`);
 
   app.use(express.json());
+
+  // SEC-8: Security response headers — applied to every response
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:"
+    );
+    next();
+  });
 
   // Bearer token middleware for protected endpoints.
   // In production API_SECRET must be set; requests are rejected if it is missing.
@@ -63,9 +89,13 @@ async function startServer() {
         // Duplicate or invalid — acknowledge silently so the platform stops retrying
         return res.status(200).json({ acknowledged: true, processed: false });
       }
-      // Translate the webhook event into an agent instruction
-      const instruction = event.content
-        ? `moltbook_event(${event.type}): ${event.content}`
+      // SEC-4: Sanitize webhook content — strip privileged command tokens before injecting
+      // into the agent instruction queue to prevent prompt-injection attacks.
+      const sanitizedContent = event.content
+        ? event.content.replace(/override\s+goal\s*:/gi, '[BLOCKED]:')
+        : undefined;
+      const instruction = sanitizedContent
+        ? `moltbook_event(${event.type}): ${sanitizedContent}`
         : `moltbook_event(${event.type}): ${JSON.stringify(event)}`;
       agentLoop.getAgent().addInstruction(instruction);
       res.status(200).json({ acknowledged: true, processed: true, eventId: event.id });
@@ -110,7 +140,7 @@ async function startServer() {
     }
   });
 
-  app.get('/api/logs', (req, res) => {
+  app.get('/api/logs', requireAuth, (req, res) => {
     try {
       const { traceId } = req.query;
       if (traceId && typeof traceId === 'string') {
@@ -197,9 +227,28 @@ async function startServer() {
     }
   });
 
-  // WebSocket server for real-time log streaming
+  // SEC-2: WebSocket server with bearer-token authentication
   const wss = new WebSocketServer({ server: httpServer, path: '/ws/logs' });
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
+    // Validate token from ?token=<secret> query parameter or Authorization header
+    const secret = process.env.API_SECRET;
+    if (secret) {
+      const rawUrl = req.url ?? '';
+      const qs = new URLSearchParams(rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?') + 1) : '');
+      const tokenParam = qs.get('token') ?? '';
+      const authHeader = (req.headers['authorization'] ?? '') as string;
+      const headerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const candidate = tokenParam || headerToken;
+      const secretBuf = Buffer.from(secret);
+      const candidateBuf = Buffer.from(candidate);
+      const authorized =
+        candidateBuf.length === secretBuf.length && timingSafeEqual(candidateBuf, secretBuf);
+      if (!authorized) {
+        ws.close(1008, 'Unauthorized');
+        return;
+      }
+    }
+
     // Send the last 100 logs on connect
     const initial = getLogs().slice(-100);
     ws.send(JSON.stringify({ type: 'history', logs: initial }));
@@ -235,6 +284,26 @@ async function startServer() {
     // Start agent after server is successfully listening
     agentLoop.start();
   });
+
+  // DEPLOY-4: Graceful shutdown — stop agent loop and drain connections before exiting
+  const shutdown = (signal: string) => {
+    console.log(`[SHUTDOWN] Received ${signal} — shutting down gracefully`);
+    agentLoop.stop();
+    wss.close(() => {
+      httpServer.close(() => {
+        console.log('[SHUTDOWN] Server closed. Exiting.');
+        process.exit(0);
+      });
+    });
+    // Force exit after 10 s if clean shutdown stalls
+    setTimeout(() => {
+      console.error('[SHUTDOWN] Forced exit after timeout');
+      process.exit(1);
+    }, 10_000).unref();
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 startServer().catch(err => {

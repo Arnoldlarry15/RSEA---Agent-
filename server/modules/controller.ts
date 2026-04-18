@@ -20,6 +20,10 @@ export class Controller {
     "Look for asymmetric bets."
   ];
 
+  /** AUDIT-1: Deterministic self-modification schedule — trigger every N cycles. */
+  private cycleCount: number = 0;
+  private static readonly SELF_MODIFY_EVERY_N_CYCLES = 10;
+
   constructor(llm: LLMInterface, memory: MemorySystem) {
     this.llm = llm;
     this.memory = memory;
@@ -30,6 +34,8 @@ export class Controller {
   }
 
   async runCycle(objective: string, context: any[]) {
+    this.cycleCount++;
+
     // 1. Observe
     const observations = await this.spotter.scan();
     
@@ -66,16 +72,34 @@ export class Controller {
 
   /**
    * Self-Modification Layer
-   * Allows the agent to adjust its own system prompts and operating parameters
+   * Allows the agent to adjust its own system prompts and operating parameters.
+   * AUDIT-3: Requires ALLOW_SELF_MODIFICATION=true and DRY_RUN=false to take effect.
+   *          All modifier changes are logged at CRITICAL level.
    */
   async selfModifyPrompts(recentContext: any[]) {
-    if (!this.llm.healthCheck() || Math.random() > 0.1) return; // Only process periodically
+    if (!this.llm.healthCheck()) return;
+    // AUDIT-1: Use deterministic cycle-based schedule instead of Math.random()
+    if ((this.cycleCount % Controller.SELF_MODIFY_EVERY_N_CYCLES) !== 0) return;
+
+    // AUDIT-3: Gate behind explicit opt-in flag (read dynamically to support test env overrides)
+    const allowSelfMod = (process.env.ALLOW_SELF_MODIFICATION ?? '').toLowerCase() === 'true';
+    if (!allowSelfMod) {
+      logEvent('self_modification_skipped', { reason: 'ALLOW_SELF_MODIFICATION not set' });
+      return;
+    }
+
+    const dryRun = (process.env.DRY_RUN ?? '').toLowerCase() === 'true';
+    if (dryRun) {
+      logEvent('self_modification_skipped', { reason: 'DRY_RUN=true; skipping self-modification' });
+      return;
+    }
 
     try {
       const updatedModifiers = await this.llm.generateModifiers(recentContext, this.globalPromptModifiers);
       if (updatedModifiers) {
         this.globalPromptModifiers = updatedModifiers;
-        logEvent('self_modification', { updatedModifiers: this.globalPromptModifiers });
+        // AUDIT-3: Log every modifier change as CRITICAL for human review
+        logEvent('self_modification_CRITICAL', { updatedModifiers: this.globalPromptModifiers });
       }
     } catch (e) {
       console.error("Self-mod failed", e);

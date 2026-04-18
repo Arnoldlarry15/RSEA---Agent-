@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Executor } from '../../../server/modules/executor';
 
 // Suppress logger output during tests
@@ -163,6 +163,24 @@ describe('Executor', () => {
   // code_eval tool
   // ---------------------------------------------------------------------------
   describe('code_eval tool', () => {
+    beforeEach(() => {
+      // SEC-3: code_eval requires explicit opt-in via ALLOW_CODE_EVAL=true
+      process.env.ALLOW_CODE_EVAL = 'true';
+    });
+
+    afterEach(() => {
+      delete process.env.ALLOW_CODE_EVAL;
+    });
+
+    it('is blocked when ALLOW_CODE_EVAL is not set', async () => {
+      delete process.env.ALLOW_CODE_EVAL;
+      const results = await executor.execute([
+        { action: 'strike', tool: 'code_eval', payload: { code: 'console.log("hi")' } }
+      ]);
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].outcome).toContain('ALLOW_CODE_EVAL');
+    });
+
     it('captures console.log output from sandboxed code', async () => {
       const results = await executor.execute([
         { action: 'strike', tool: 'code_eval', payload: { code: 'console.log("hello world")' } }
@@ -223,6 +241,15 @@ describe('Executor', () => {
       ]);
       expect(results[0].status).toBe('executed');
       expect(results[0].outcome).toContain('hello');
+    });
+
+    it('blocks a command when an argument contains unsafe characters', async () => {
+      process.env.ALLOWED_COMMANDS = 'echo';
+      const results = await executor.execute([
+        { action: 'strike', tool: 'system_command', payload: { command: 'echo $(whoami)' } }
+      ]);
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].outcome).toContain('unsafe');
     });
   });
 

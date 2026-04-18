@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 // Import the logger statically — it writes to data/logs.json relative to cwd
-import { logEvent, getLogs, subscribeToLogs } from '../../../server/utils/logger';
+import { logEvent, getLogs, getLogsByTraceId, subscribeToLogs, newTraceId, setTraceId, getTraceId } from '../../../server/utils/logger';
 
 const LOG_FILE = path.join(process.cwd(), 'data', 'logs.json');
 
@@ -82,6 +82,57 @@ describe('Logger', () => {
     const last = logs[logs.length - 1];
     expect(() => new Date(last.time)).not.toThrow();
     expect(last.time).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // TEST-4: getLogsByTraceId
+  // ---------------------------------------------------------------------------
+  describe('getLogsByTraceId', () => {
+    it('returns entries that match the given traceId', () => {
+      logEvent('trace_stage', { x: 1 }, 'trace-aaa');
+      logEvent('other_stage', { x: 2 }, 'trace-bbb');
+      logEvent('trace_stage2', { x: 3 }, 'trace-aaa');
+
+      const results = getLogsByTraceId('trace-aaa');
+      expect(results).toHaveLength(2);
+      expect(results.every(e => e.traceId === 'trace-aaa')).toBe(true);
+    });
+
+    it('returns an empty array when no entries match the traceId', () => {
+      logEvent('some_stage', { x: 1 }, 'trace-xyz');
+      const results = getLogsByTraceId('trace-does-not-exist');
+      expect(results).toHaveLength(0);
+    });
+
+    it('returns an empty array when the log file is empty', () => {
+      clearLogFile();
+      const results = getLogsByTraceId('trace-any');
+      expect(results).toHaveLength(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Trace ID helpers
+  // ---------------------------------------------------------------------------
+  describe('trace ID helpers', () => {
+    it('newTraceId returns a UUID-format string', () => {
+      const id = newTraceId();
+      expect(typeof id).toBe('string');
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    });
+
+    it('setTraceId and getTraceId round-trip outside an ALS context', () => {
+      setTraceId('my-trace-id');
+      expect(getTraceId()).toBe('my-trace-id');
+      setTraceId(undefined);
+    });
+
+    it('logEvent uses the explicit traceId argument when provided', () => {
+      logEvent('explicit_trace', { v: 1 }, 'explicit-id');
+      const logs = getLogs();
+      const last = logs[logs.length - 1];
+      expect(last.traceId).toBe('explicit-id');
+    });
   });
 });
 

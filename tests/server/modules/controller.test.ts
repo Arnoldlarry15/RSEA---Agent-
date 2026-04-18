@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Controller } from '../../../server/modules/controller';
 import type { LLMInterface } from '../../../server/cognition/llm';
 import type { MemorySystem } from '../../../server/core/memory';
@@ -121,33 +121,57 @@ describe('Controller', () => {
   });
 
   describe('selfModifyPrompts', () => {
-    it('calls generateModifiers when LLM is healthy and random < 0.1', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.05);
-      await controller.selfModifyPrompts([{ ctx: 1 }]);
-      expect(llm.generateModifiers).toHaveBeenCalled();
-      vi.restoreAllMocks();
+    beforeEach(() => {
+      delete process.env.ALLOW_SELF_MODIFICATION;
+      delete process.env.DRY_RUN;
     });
 
-    it('does not call generateModifiers when random >= 0.1', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    afterEach(() => {
+      delete process.env.ALLOW_SELF_MODIFICATION;
+      delete process.env.DRY_RUN;
+    });
+
+    it('does not call generateModifiers when ALLOW_SELF_MODIFICATION is not set', async () => {
+      // cycleCount=0 → scheduled (0 % 10 === 0), but flag not set → blocked
+      await controller.selfModifyPrompts([{ ctx: 1 }]);
+      expect(llm.generateModifiers).not.toHaveBeenCalled();
+    });
+
+    it('does not call generateModifiers when DRY_RUN=true', async () => {
+      process.env.ALLOW_SELF_MODIFICATION = 'true';
+      process.env.DRY_RUN = 'true';
       await controller.selfModifyPrompts([]);
       expect(llm.generateModifiers).not.toHaveBeenCalled();
-      vi.restoreAllMocks();
     });
 
     it('does not call generateModifiers when LLM is unhealthy', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.05);
+      process.env.ALLOW_SELF_MODIFICATION = 'true';
       (llm.healthCheck as any).mockReturnValue(false);
       await controller.selfModifyPrompts([]);
       expect(llm.generateModifiers).not.toHaveBeenCalled();
-      vi.restoreAllMocks();
+    });
+
+    it('calls generateModifiers on the scheduled cycle when opted-in', async () => {
+      process.env.ALLOW_SELF_MODIFICATION = 'true';
+      // cycleCount is 0 at construction → 0 % 10 === 0 → scheduled
+      await controller.selfModifyPrompts([{ ctx: 1 }]);
+      expect(llm.generateModifiers).toHaveBeenCalled();
+    });
+
+    it('does not call generateModifiers on non-scheduled cycles', async () => {
+      process.env.ALLOW_SELF_MODIFICATION = 'true';
+      // Run one full cycle (increments cycleCount to 1)
+      await controller.runCycle('goal', []);
+      (llm.generateModifiers as any).mockClear();
+      // Now cycleCount=1 → 1 % 10 ≠ 0 → skip
+      await controller.selfModifyPrompts([]);
+      expect(llm.generateModifiers).not.toHaveBeenCalled();
     });
 
     it('updates globalPromptModifiers on success', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.05);
+      process.env.ALLOW_SELF_MODIFICATION = 'true';
       await controller.selfModifyPrompts([]);
       expect(controller.getModifiers()).toEqual(['be bold', 'preserve capital']);
-      vi.restoreAllMocks();
     });
   });
 });

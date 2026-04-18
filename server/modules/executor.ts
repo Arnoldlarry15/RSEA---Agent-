@@ -40,6 +40,9 @@ const MAX_CODE_SIZE = 10_000;
 /** When DRY_RUN=true the executor logs every action but skips actual execution. */
 const DRY_RUN = (process.env.DRY_RUN ?? '').toLowerCase() === 'true';
 
+/** Safe argument pattern: alphanumeric, hyphens, dots, underscores, forward slashes, @, = */
+const SAFE_ARG_PATTERN = /^[a-zA-Z0-9\-._/@=:,]+$/;
+
 /** Outbound HTTP request timeout in milliseconds (default: 10 s). */
 const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS ?? '10000', 10);
 
@@ -143,6 +146,14 @@ export class Executor {
             }
           }
         } else if (action.tool === 'code_eval') {
+          // SEC-3: code_eval must be explicitly opted-in via ALLOW_CODE_EVAL=true.
+          // Node.js vm.createContext is NOT a security boundary — sandbox escapes are possible.
+          const allowCodeEval = (process.env.ALLOW_CODE_EVAL ?? '').toLowerCase() === 'true';
+          if (!allowCodeEval) {
+            logEvent('executor_blocked', { reason: 'code_eval is disabled; set ALLOW_CODE_EVAL=true to enable', action });
+            status = 'blocked';
+            outcome = 'code_eval is disabled. Set ALLOW_CODE_EVAL=true to enable this tool (see security documentation).';
+          } else {
           const code: string = action.payload?.code ?? '';
           if (code.length > MAX_CODE_SIZE) {
             throw new Error(`Code too large: ${code.length} chars (max ${MAX_CODE_SIZE})`);
@@ -159,6 +170,7 @@ export class Executor {
           const script = new vm.Script(code);
           script.runInNewContext(vm.createContext(sandbox), { timeout: 2000 });
           outcome = capturedOutput || '(no output)';
+          }
         } else if (action.tool === 'system_command') {
           const rawCommand: string = action.payload?.command ?? '';
           const parts = rawCommand.trim().split(/\s+/);
@@ -173,8 +185,16 @@ export class Executor {
             status = 'blocked';
             outcome = `Command '${cmd}' is not permitted (not in ALLOWED_COMMANDS allowlist)`;
           } else {
+            // SEC-9: Validate each argument against a safe pattern to prevent argument injection
+            const unsafeArgs = args.filter(a => !SAFE_ARG_PATTERN.test(a));
+            if (unsafeArgs.length > 0) {
+              logEvent('executor_blocked', { reason: 'unsafe argument pattern', unsafeArgs, command: cmd });
+              status = 'blocked';
+              outcome = `Command '${cmd}' was blocked: argument(s) contain unsafe characters`;
+            } else {
             const { stdout, stderr } = await execFileAsync(cmd, args);
             outcome = stdout || stderr || '(no output)';
+            }
           }
         } else if (action.tool === 'simulate') {
           const luck = Math.random();
