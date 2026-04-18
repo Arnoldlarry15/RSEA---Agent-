@@ -75,13 +75,17 @@ export class Controller {
 
     // 5. Observe & Compare — build the reality feedback loop
     const evaluations = results.map((result: any, index: number) => {
-      const task = rankedTasks[index] ?? rankedTasks[0];
-      const expected = task?.expected ?? task?.description ?? 'task completion';
+      const task = rankedTasks[index];
+      if (!task) {
+        logEvent('controller_evaluation_skipped', { reason: 'no matching task for result index', index });
+        return null;
+      }
+      const expected = task.expected ?? task.description ?? 'NO_EXPECTED_OUTCOME';
       const observation = this.observer.observe(result);
       const evaluation = this.comparator.compare(expected, observation);
-      logEvent('controller_evaluation', { taskId: task?.id, expected, observation, evaluation });
-      return { taskId: task?.id, expected, observation, evaluation };
-    });
+      logEvent('controller_evaluation', { taskId: task.id, expected, observation, evaluation });
+      return { taskId: task.id, expected, observation, evaluation };
+    }).filter((ev): ev is NonNullable<typeof ev> => ev !== null);
 
     // 6. Persist evaluations into memory so the agent learns from outcomes
     for (const ev of evaluations) {
