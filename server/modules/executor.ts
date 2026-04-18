@@ -36,6 +36,60 @@ function isSsrfTarget(rawUrl: string): boolean {
 /** Maximum number of characters accepted by the code_eval executor. */
 const MAX_CODE_SIZE = 10_000;
 
+/** When DRY_RUN=true the executor logs every action but skips actual execution. */
+const DRY_RUN = (process.env.DRY_RUN ?? '').toLowerCase() === 'true';
+
+/** Outbound HTTP request timeout in milliseconds (default: 10 s). */
+const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS ?? '10000', 10);
+
+/** Maximum number of retry attempts for transient api_fetch failures. */
+const MAX_FETCH_RETRIES = parseInt(process.env.MAX_FETCH_RETRIES ?? '3', 10);
+
+/**
+ * Fetch with a hard timeout via AbortController.
+ * Throws on timeout or network error; does NOT retry — callers handle retries.
+ */
+async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Fetch with exponential-backoff retry for transient failures (5xx / network errors).
+ * Returns the Response on success, throws on final failure.
+ */
+async function fetchWithRetry(url: string, options: RequestInit = {}): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAX_FETCH_RETRIES; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, options);
+      // Retry on 429 / 5xx
+      if (res.status >= 500 || res.status === 429) {
+        lastErr = new Error(`HTTP ${res.status}`);
+        if (attempt < MAX_FETCH_RETRIES) {
+          const delay = Math.min(500 * Math.pow(2, attempt), 8000);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        throw lastErr;
+      }
+      return res;
+    } catch (err: any) {
+      lastErr = err;
+      if (attempt < MAX_FETCH_RETRIES) {
+        const delay = Math.min(500 * Math.pow(2, attempt), 8000);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 export class Executor {
   /**
    * Executes tools, code, or APIs based on decision outputs.
@@ -44,7 +98,20 @@ export class Executor {
     const results = [];
     
     for (const action of actions) {
-      logEvent('executor_start', action);
+      logEvent('executor_start', { action, dryRun: DRY_RUN });
+
+      // In dry-run mode skip actual execution and return a simulated result
+      if (DRY_RUN) {
+        results.push({
+          status: 'dry_run',
+          timestamp: new Date().toISOString(),
+          action,
+          outcome: `DRY RUN — would have executed tool '${action.tool}'`,
+          priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD',
+        });
+        continue;
+      }
+
       let outcome = 'Success';
       let status = 'executed';
       
@@ -70,7 +137,7 @@ export class Executor {
               status = 'blocked';
               outcome = `Host '${parsed.hostname}' is not in the ALLOWED_FETCH_HOSTS allowlist`;
             } else {
-              const res = await fetch(targetUrl, action.payload.options || {});
+              const res = await fetchWithRetry(targetUrl, action.payload.options || {});
               outcome = `API Call completed with status ${res.status}`;
             }
           }

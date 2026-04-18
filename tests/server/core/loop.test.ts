@@ -3,6 +3,9 @@ import { AgentLoop } from '../../../server/core/loop';
 
 vi.mock('../../../server/utils/logger', () => ({
   logEvent: vi.fn(),
+  newTraceId: vi.fn().mockReturnValue('test-trace-id'),
+  setTraceId: vi.fn(),
+  getTraceId: vi.fn().mockReturnValue('test-trace-id'),
 }));
 
 // Stub Agent so the loop tests don't spin up a real SQLite DB or LLM

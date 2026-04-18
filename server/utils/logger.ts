@@ -1,10 +1,12 @@
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 
 export interface LogEntry {
   time: string;
   stage: string;
   data: any;
+  traceId?: string;
 }
 
 const LOG_FILE = path.join(process.cwd(), 'data', 'logs.json');
@@ -25,14 +27,50 @@ export function subscribeToLogs(fn: LogSubscriber): () => void {
   return () => subscribers.delete(fn);
 }
 
-export function logEvent(stage: string, data: any) {
+/** Active trace ID for the current async context.  Set via setTraceId(). */
+let activeTraceId: string | undefined;
+
+export function setTraceId(id: string | undefined) {
+  activeTraceId = id;
+}
+
+export function getTraceId(): string | undefined {
+  return activeTraceId;
+}
+
+/** Generate a new random trace ID and activate it. Returns the new ID. */
+export function newTraceId(): string {
+  const id = randomUUID();
+  activeTraceId = id;
+  return id;
+}
+
+/** Lazy verbosity read so tests can set VERBOSITY_LEVEL before importing this module. */
+function getVerbosity(): string {
+  return (process.env.VERBOSITY_LEVEL ?? 'normal').toLowerCase();
+}
+
+export function logEvent(stage: string, data: any, traceId?: string) {
+  const verbosity = getVerbosity();
+  // In silent mode only critical/error stages are logged to the console
+  const isCritical = stage.includes('error') || stage.includes('fail') || stage.includes('blocked') || stage.includes('kill');
+  if (verbosity === 'silent' && !isCritical) {
+    // Still persist to file and notify subscribers so the audit trail is intact
+  } else {
+    if (verbosity === 'verbose') {
+      console.log(`[${stage.toUpperCase()}]`, JSON.stringify(data));
+    } else {
+      // normal: log without full data payload to keep stdout readable
+      console.log(`[${stage.toUpperCase()}]`, typeof data === 'object' ? JSON.stringify(data) : data);
+    }
+  }
+
   const entry: LogEntry = {
     time: new Date().toISOString(),
     stage,
-    data
+    data,
+    traceId: traceId ?? activeTraceId,
   };
-
-  console.log(`[${stage.toUpperCase()}]`, JSON.stringify(data));
 
   // Notify real-time subscribers before file I/O
   for (const fn of subscribers) {
@@ -75,4 +113,8 @@ export function getLogs(): LogEntry[] {
   } catch (err) {
     return [];
   }
+}
+
+export function getLogsByTraceId(traceId: string): LogEntry[] {
+  return getLogs().filter(e => e.traceId === traceId);
 }

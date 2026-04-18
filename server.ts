@@ -7,7 +7,9 @@ import { createServer as createViteServer } from 'vite';
 import { createServer as createHttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { AgentLoop } from './server/core/loop';
-import { getLogs, subscribeToLogs } from './server/utils/logger';
+import { getLogs, subscribeToLogs, getLogsByTraceId } from './server/utils/logger';
+import { ingestWebhookEvent } from './server/adapters/moltbook';
+import { VERBOSITY, DECISION_AGGRESSIVENESS, CONFIDENCE_THRESHOLD } from './server/core/config';
 
 async function startServer() {
   const app = express();
@@ -51,6 +53,27 @@ async function startServer() {
   // Initialize Agent
   const agentLoop = new AgentLoop();
 
+  // Moltbook webhook — receives platform events and forwards them to the agent
+  app.post('/api/webhooks/moltbook', (req, res) => {
+    try {
+      const rawBody = JSON.stringify(req.body); // body already parsed by express.json()
+      const secretHeader = req.headers['x-moltbook-secret'] as string | undefined;
+      const event = ingestWebhookEvent(rawBody, secretHeader);
+      if (!event) {
+        // Duplicate or invalid — acknowledge silently so the platform stops retrying
+        return res.status(200).json({ acknowledged: true, processed: false });
+      }
+      // Translate the webhook event into an agent instruction
+      const instruction = event.content
+        ? `moltbook_event(${event.type}): ${event.content}`
+        : `moltbook_event(${event.type}): ${JSON.stringify(event)}`;
+      agentLoop.getAgent().addInstruction(instruction);
+      res.status(200).json({ acknowledged: true, processed: true, eventId: event.id });
+    } catch (err) {
+      res.status(500).json({ error: 'Webhook processing failed' });
+    }
+  });
+
   // Root test route
   app.get('/ping', (req, res) => {
     res.send('pong');
@@ -64,7 +87,14 @@ async function startServer() {
         framework: 'RSEA',
         version: '1.0.0',
         uptime: process.uptime(),
-        goals: agentLoop.getAgent().getGoals().getGoals()
+        goals: agentLoop.getAgent().getGoals().getGoals(),
+        config: {
+          verbosity: VERBOSITY,
+          decisionAggressiveness: DECISION_AGGRESSIVENESS,
+          confidenceThreshold: CONFIDENCE_THRESHOLD,
+          dryRun: (process.env.DRY_RUN ?? '').toLowerCase() === 'true',
+          killSwitch: agentLoop.isKillSwitchActive(),
+        }
       });
     } catch (err) {
       res.status(500).json({ error: 'Failed to generate status' });
@@ -82,6 +112,11 @@ async function startServer() {
 
   app.get('/api/logs', (req, res) => {
     try {
+      const { traceId } = req.query;
+      if (traceId && typeof traceId === 'string') {
+        const traced = getLogsByTraceId(traceId);
+        return res.json(traced);
+      }
       const logs = getLogs();
       res.json(logs.reverse().slice(0, 100)); // Last 100 logs
     } catch (err) {
@@ -148,6 +183,12 @@ async function startServer() {
         } else {
           res.status(400).json({ error: 'Invalid interval value' });
         }
+      } else if (action === 'kill_switch_on') {
+        agentLoop.activateKillSwitch();
+        res.json({ message: 'Kill switch activated — agent cycles paused' });
+      } else if (action === 'kill_switch_off') {
+        agentLoop.deactivateKillSwitch();
+        res.json({ message: 'Kill switch deactivated — agent cycles resumed' });
       } else {
         res.status(400).json({ error: 'Invalid action' });
       }
