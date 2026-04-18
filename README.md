@@ -8,10 +8,11 @@ The server is organized into the following layers:
 
 | Layer | Path | Description |
 |-------|------|-------------|
-| **Core** | `server/core/` | `Agent`, `AgentLoop`, `GoalManager`, `MemorySystem`, `Reflector`, `RulesEngine` |
+| **Core** | `server/core/` | `Agent`, `AgentLoop`, `GoalManager`, `MemorySystem`, `Reflector`, `RulesEngine`, `ToolRegistry` |
 | **Cognition** | `server/cognition/` | `LLMInterface` — wraps Gemini, OpenAI, Anthropic, Grok, and Ollama APIs |
-| **Modules** | `server/modules/` | `Controller`, `Evaluator`, `Executor`, `Planner`, `Sniper`, `Spotter` |
+| **Modules** | `server/modules/` | `Controller`, `Evaluator`, `Executor`, `Planner`, `Sniper`, `Spotter`, `ToolValidator` |
 | **Utils** | `server/utils/` | `Logger` — file-backed log with rotation and real-time pub/sub; `SSRF` guard |
+| **Tools** | `server/core/tools/` | `BaseTool`, `ToolRegistry`, `HTTPTool`, `FileTool`, `FileWriteTool`, `WebhookTool` |
 
 Each agent cycle follows the RSEA pattern:
 1. **Observe** — Spotter gathers live market signals (BTC/USDT from Binance + simulated feeds)
@@ -21,7 +22,11 @@ Each agent cycle follows the RSEA pattern:
 5. **Reflect** — Reflector persists insights to short-term and long-term (vector) memory
 6. **Self-Modify** — Controller periodically adjusts its own strategic prompt modifiers via LLM
 
-A `RulesEngine` threshold (60/100) gates all actions before execution.
+Actions pass through a two-stage control system before execution:
+
+- **`RulesEngine.apply()`** — confidence-score gate: only tasks scoring above `CONFIDENCE_THRESHOLD` (default 60/100) proceed, further filtered by `DECISION_AGGRESSIVENESS`.
+- **`RulesEngine.validate()`** — hard constraint gate run by the Executor on every action: enforces `MAX_ACTIONS_PER_CYCLE`, `RULE_ALLOWED_TOOLS`, `RISK_THRESHOLD`, and `ACTION_TIMEOUT_MS`.
+- **`ToolValidator`** — zero-trust LLM output gate in the Sniper: checks tool whitelist and required payload parameters before forwarding to the Executor.
 
 ## Prerequisites
 
@@ -72,6 +77,10 @@ Key environment variables (see `.env.example` for the full list):
 | `DECISION_AGGRESSIVENESS` | `0.5` | 0.0 = very conservative, 1.0 = act on any positive signal |
 | `VERBOSITY_LEVEL` | `normal` | `silent` \| `normal` \| `verbose` |
 | `CYCLE_TIMEOUT_MS` | `30000` | Max wall-clock time per agent cycle (ms) |
+| `MAX_ACTIONS_PER_CYCLE` | `10` | Hard cap on actions the RulesEngine will approve in one execution cycle |
+| `RISK_THRESHOLD` | `90` | Actions with a risk score above this value (0–100) are blocked by the RulesEngine |
+| `ACTION_TIMEOUT_MS` | `5000` | Maximum per-action timeout (ms) the RulesEngine will permit |
+| `RULE_ALLOWED_TOOLS` | — | Comma-separated tool allowlist enforced by the RulesEngine (empty = allow all) |
 | `SIGNAL_FEED_URL` | — | Optional URL for a custom signal feed (JSON array or object) |
 | `MOLTBOOK_API_URL` | — | Moltbook messaging platform base URL |
 | `MOLTBOOK_WEBHOOK_SECRET` | — | Required in production when `MOLTBOOK_API_URL` is set |
@@ -92,9 +101,12 @@ Key environment variables (see `.env.example` for the full list):
 ## Security Notes
 
 - **`ALLOW_CODE_EVAL=true`** enables sandboxed JavaScript execution using Node.js `vm`. Note that `vm.createContext` is **not a security boundary** — sandbox escapes are possible. Only enable this in trusted, isolated environments.
-- **SSRF protection** is enforced on all outbound HTTP requests (executor `api_fetch`, Spotter `SIGNAL_FEED_URL`). Requests to private/loopback addresses are blocked.
+- **SSRF protection** is enforced on all outbound HTTP requests (executor `api_fetch` and `http_request`, Spotter `SIGNAL_FEED_URL`). Requests to private/loopback addresses and non-HTTP(S) schemes are blocked.
 - **Rate limiting** on `POST /api/command`: max 20 requests per IP per minute.
 - All authenticated endpoints require `Authorization: Bearer <API_SECRET>`.
+- **Security response headers** (`X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`, `Content-Security-Policy`) are applied to every response.
+- **`ToolValidator`** zero-trust gate: every LLM-generated action is validated against a tool whitelist and required payload parameters before it reaches the Executor.
+- **`RulesEngine.validate()`** hard constraint gate: enforces cycle action limits, tool allowlists, risk thresholds, and timeout caps on every action in the Executor.
 
 ## Scripts
 

@@ -491,5 +491,81 @@ describe('Executor', () => {
       if (fs.existsSync(f)) fs.unlinkSync(f);
     });
   });
-});
 
+  // ---------------------------------------------------------------------------
+  // RulesEngine constraint gate (validate() integration)
+  // ---------------------------------------------------------------------------
+  describe('RulesEngine constraint gate', () => {
+    afterEach(() => {
+      delete process.env.MAX_ACTIONS_PER_CYCLE;
+      delete process.env.RISK_THRESHOLD;
+      delete process.env.ACTION_TIMEOUT_MS;
+      delete process.env.RULE_ALLOWED_TOOLS;
+    });
+
+    it('blocks an action whose risk exceeds RISK_THRESHOLD', async () => {
+      process.env.RISK_THRESHOLD = '50';
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'risky' }, risk: 75 }
+      ]);
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].outcome).toContain('risk score');
+      expect(results[0].success).toBe(false);
+    });
+
+    it('allows an action whose risk is at or below RISK_THRESHOLD', async () => {
+      process.env.RISK_THRESHOLD = '50';
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'safe' }, risk: 50 }
+      ]);
+      expect(results[0].status).toBe('simulated');
+      vi.restoreAllMocks();
+    });
+
+    it('blocks an action when the per-cycle action count is exhausted', async () => {
+      process.env.MAX_ACTIONS_PER_CYCLE = '1';
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'first' } },
+        { action: 'strike', tool: 'simulate', payload: { info: 'second' } },
+      ]);
+      expect(results[0].status).toBe('simulated');
+      expect(results[1].status).toBe('blocked');
+      expect(results[1].outcome).toContain('Cycle action limit');
+      vi.restoreAllMocks();
+    });
+
+    it('resets the per-cycle counter between execute() calls', async () => {
+      process.env.MAX_ACTIONS_PER_CYCLE = '1';
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      const first = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'a' } }
+      ]);
+      const second = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'b' } }
+      ]);
+      expect(first[0].status).toBe('simulated');
+      expect(second[0].status).toBe('simulated');
+      vi.restoreAllMocks();
+    });
+
+    it('blocks a tool not in RULE_ALLOWED_TOOLS', async () => {
+      process.env.RULE_ALLOWED_TOOLS = 'api_fetch';
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: {} }
+      ]);
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].outcome).toContain('RULE_ALLOWED_TOOLS');
+    });
+
+    it('blocks an action whose timeout exceeds ACTION_TIMEOUT_MS', async () => {
+      process.env.ACTION_TIMEOUT_MS = '2000';
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: {}, timeout: 9999 }
+      ]);
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].outcome).toContain('timeout');
+    });
+  });
+});

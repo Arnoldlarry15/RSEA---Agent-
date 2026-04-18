@@ -5,6 +5,7 @@ import { logEvent } from '../utils/logger';
 import { isSsrfTarget } from '../utils/ssrf';
 import { sendMessage as moltbookSend, fetchThread as moltbookFetch } from '../adapters/moltbook';
 import { ToolRegistry, createDefaultRegistry } from '../core/tools/index';
+import { RulesEngine } from '../core/rules';
 
 const execFileAsync = promisify(execFile);
 
@@ -97,10 +98,31 @@ export class Executor {
    */
   async execute(actions: any[], constraints?: ExecutionConstraints) {
     const results = [];
+    // Fresh RulesEngine per execute() call so the per-cycle counter starts at zero.
+    const ruleEngine = new RulesEngine();
     
     for (const action of actions) {
       const effectiveDryRun = constraints?.dryRun ?? isDryRun();
       logEvent('executor_start', { action, dryRun: effectiveDryRun });
+
+      // ── RulesEngine hard-constraint gate ─────────────────────────────────────
+      const ruleValidation = ruleEngine.validate(action);
+      if (!ruleValidation.allowed) {
+        logEvent('executor_blocked', { reason: ruleValidation.reason, action });
+        results.push({
+          status: 'blocked',
+          timestamp: new Date().toISOString(),
+          action,
+          outcome: ruleValidation.reason,
+          priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD',
+          result: null,
+          success: false,
+          error: ruleValidation.reason,
+          side_effects: [],
+          confidence: 0,
+        });
+        continue;
+      }
 
       // Constraints: optional tool allowlist
       if (constraints?.allowedTools && !constraints.allowedTools.includes(action.tool)) {
