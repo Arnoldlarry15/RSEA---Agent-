@@ -8,6 +8,26 @@ import { MemoryRetriever } from '../memory/retriever';
 import { Observer } from '../core/observation/observer';
 import { Comparator } from '../core/evaluation/comparator';
 import { logEvent } from '../utils/logger';
+import {
+  StrategyConfig,
+  MUTABLE_STRATEGY_FIELDS,
+  defaultStrategyConfig,
+  cloneStrategyConfig,
+} from '../core/strategy/config';
+import { StrategyVersioning } from '../core/strategy/versioning';
+
+/**
+ * Minimum number of evaluation scores that must be collected before the
+ * auto-rollback logic will fire.  Prevents premature rollbacks in the first
+ * few cycles when the sample size is too small to be meaningful.
+ */
+const MIN_SCORES_FOR_ROLLBACK = 3;
+
+/**
+ * If the latest cycle's average evaluation score falls this many points below
+ * the long-run average, the strategy is automatically rolled back.
+ */
+const ROLLBACK_DROP_THRESHOLD = 20;
 
 export class Controller {
   private spotter: Spotter;
@@ -29,6 +49,12 @@ export class Controller {
   private cycleCount: number = 0;
   private static readonly SELF_MODIFY_EVERY_N_CYCLES = 10;
 
+  // ── Phase 5: Self-Evolution ──────────────────────────────────────────────
+  private strategyConfig: StrategyConfig = defaultStrategyConfig();
+  private readonly strategyVersioning: StrategyVersioning = new StrategyVersioning();
+  /** Rolling list of all evaluation scores across cycles (used for rollback). */
+  private evaluationScores: number[] = [];
+
   constructor(llm: LLMInterface, memory: MemorySystem, retriever?: MemoryRetriever) {
     this.llm = llm;
     this.memory = memory;
@@ -38,6 +64,9 @@ export class Controller {
     this.sniper = new Sniper();
     this.observer = new Observer();
     this.comparator = new Comparator();
+
+    // Commit the initial baseline so rollback always has a safe target.
+    this.strategyVersioning.commit('initial baseline', 0, this.strategyConfig);
   }
 
   async runCycle(objective: string, context: any[]) {
@@ -101,7 +130,42 @@ export class Controller {
       });
     }
 
+    // 7. Phase 5: check for strategy performance degradation and auto-rollback
+    const cycleScores = evaluations
+      .map((ev) => typeof ev.evaluation.score === 'number' ? ev.evaluation.score : null)
+      .filter((s): s is number => s !== null);
+    if (cycleScores.length > 0) {
+      this.checkAndRollbackStrategy(cycleScores);
+    }
+
     return { observations, plan: rankedTasks, results, evaluations };
+  }
+
+  /**
+   * Collects the cycle's evaluation scores and triggers an automatic rollback
+   * when performance has dropped significantly below the historical mean.
+   */
+  private checkAndRollbackStrategy(cycleScores: number[]): void {
+    const cycleAvg = cycleScores.reduce((a, b) => a + b, 0) / cycleScores.length;
+    this.evaluationScores.push(...cycleScores);
+
+    if (this.evaluationScores.length < MIN_SCORES_FOR_ROLLBACK) return;
+
+    const allAvg =
+      this.evaluationScores.reduce((a, b) => a + b, 0) / this.evaluationScores.length;
+
+    if (cycleAvg < allAvg - ROLLBACK_DROP_THRESHOLD) {
+      const restored = this.strategyVersioning.rollback();
+      if (restored) {
+        this.strategyConfig = restored;
+        logEvent('strategy_rollback', {
+          reason: 'performance_drop',
+          cycleAvg,
+          historicalAvg: allAvg,
+          restoredVersion: this.strategyVersioning.getCurrent()?.version,
+        });
+      }
+    }
   }
 
   /**
@@ -142,5 +206,52 @@ export class Controller {
 
   getModifiers() {
     return this.globalPromptModifiers;
+  }
+
+  // ── Phase 5: Strategy Management ──────────────────────────────────────────
+
+  /**
+   * Applies a partial strategy update — **only** the fields listed in
+   * MUTABLE_STRATEGY_FIELDS (exploration_rate, risk_tolerance, tool_preference)
+   * are accepted; all other keys are silently ignored.
+   *
+   * Every accepted update is committed to the StrategyVersioning history so
+   * it can be rolled back at any time.
+   *
+   * @param updates  Partial StrategyConfig with new values.
+   * @param change   Human-readable description of the change (stored in history).
+   * @param impact   Estimated impact score (+/- numeric delta) for the change.
+   */
+  updateStrategy(
+    updates: Partial<StrategyConfig>,
+    change: string,
+    impact: number,
+  ): void {
+    const next = cloneStrategyConfig(this.strategyConfig);
+
+    // Build a filtered update containing only mutable fields, then merge.
+    const filteredEntries = (Object.keys(updates) as Array<keyof StrategyConfig>)
+      .filter((k): k is typeof MUTABLE_STRATEGY_FIELDS[number] =>
+        (MUTABLE_STRATEGY_FIELDS as ReadonlyArray<string>).includes(k),
+      )
+      .map((k) => [k, updates[k]] as const);
+
+    if (filteredEntries.length === 0) return;
+
+    Object.assign(next, Object.fromEntries(filteredEntries));
+
+    this.strategyConfig = next;
+    const committed = this.strategyVersioning.commit(change, impact, this.strategyConfig);
+    logEvent('strategy_updated', { version: committed.version, change, impact });
+  }
+
+  /** Returns a deep copy of the currently active StrategyConfig. */
+  getStrategy(): StrategyConfig {
+    return cloneStrategyConfig(this.strategyConfig);
+  }
+
+  /** Returns the full version history from the StrategyVersioning system. */
+  getStrategyHistory() {
+    return this.strategyVersioning.getHistory();
   }
 }
