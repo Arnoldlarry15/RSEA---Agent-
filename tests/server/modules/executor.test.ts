@@ -6,6 +6,12 @@ vi.mock('../../../server/utils/logger', () => ({
   logEvent: vi.fn(),
 }));
 
+// Mock Moltbook adapter so tests don't need a live API
+vi.mock('../../../server/adapters/moltbook', () => ({
+  sendMessage: vi.fn().mockResolvedValue({ id: 'msg1', ok: true }),
+  fetchThread: vi.fn().mockResolvedValue({ messages: [{ id: 'm1', content: 'hello' }] }),
+}));
+
 describe('Executor', () => {
   let executor: Executor;
 
@@ -259,6 +265,65 @@ describe('Executor', () => {
       ]);
       expect(results).toHaveLength(2);
       vi.restoreAllMocks();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // moltbook_send_message tool
+  // ---------------------------------------------------------------------------
+  describe('moltbook_send_message tool', () => {
+    it('sends a message and reports success', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_send_message', payload: { threadId: 'thread-1', content: 'hello' } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].outcome).toContain('thread-1');
+    });
+
+    it('fails when threadId is missing', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_send_message', payload: { content: 'hello' } }
+      ]);
+      expect(results[0].status).toBe('failed');
+      expect(results[0].outcome).toContain('threadId');
+    });
+
+    it('fails when content is missing', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_send_message', payload: { threadId: 'thread-1' } }
+      ]);
+      expect(results[0].status).toBe('failed');
+      expect(results[0].outcome).toContain('content');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // moltbook_fetch_thread tool
+  // ---------------------------------------------------------------------------
+  describe('moltbook_fetch_thread tool', () => {
+    it('fetches a thread and returns its content', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_fetch_thread', payload: { threadId: 'thread-1' } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].outcome).toContain('thread-1');
+    });
+
+    it('uses custom page and limit parameters when provided', async () => {
+      const { fetchThread } = await import('../../../server/adapters/moltbook');
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_fetch_thread', payload: { threadId: 'thread-2', page: 2, limit: 10 } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(fetchThread).toHaveBeenCalledWith('thread-2', 2, 10);
+    });
+
+    it('fails when threadId is missing', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_fetch_thread', payload: {} }
+      ]);
+      expect(results[0].status).toBe('failed');
+      expect(results[0].outcome).toContain('threadId');
     });
   });
 });

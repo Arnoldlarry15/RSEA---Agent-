@@ -2,6 +2,7 @@ import vm from 'vm';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { logEvent } from '../utils/logger';
+import { sendMessage as moltbookSend, fetchThread as moltbookFetch } from '../adapters/moltbook';
 
 const execFileAsync = promisify(execFile);
 
@@ -180,6 +181,24 @@ export class Executor {
           if (luck > 0.95) outcome = `Anomaly: Collision detected for simulated task (${action.payload.info || ''}).`;
           else outcome = `Simulated Execution optimized successfully for: ${action.payload.info || ''}`;
           status = 'simulated';
+        } else if (action.tool === 'moltbook_send_message') {
+          const { threadId, content } = action.payload ?? {};
+          if (!threadId || !content) {
+            throw new Error('moltbook_send_message requires payload.threadId and payload.content');
+          }
+          const result = await moltbookSend(String(threadId), String(content));
+          outcome = `Message sent to Moltbook thread '${threadId}': ${JSON.stringify(result)}`;
+        } else if (action.tool === 'moltbook_fetch_thread') {
+          const { threadId, page, limit } = action.payload ?? {};
+          if (!threadId) {
+            throw new Error('moltbook_fetch_thread requires payload.threadId');
+          }
+          const result = await moltbookFetch(
+            String(threadId),
+            page !== undefined ? Number(page) : 1,
+            limit !== undefined ? Number(limit) : 50
+          );
+          outcome = `Fetched Moltbook thread '${threadId}': ${JSON.stringify(result)}`;
         } else {
           outcome = `Unknown tool: ${action.tool}`;
           status = 'failed';
