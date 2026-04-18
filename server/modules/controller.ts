@@ -4,6 +4,8 @@ import { Evaluator } from './evaluator';
 import { Sniper } from './sniper';
 import { LLMInterface } from '../cognition/llm';
 import { MemorySystem } from '../core/memory';
+import { Observer } from '../core/observation/observer';
+import { Comparator } from '../core/evaluation/comparator';
 import { logEvent } from '../utils/logger';
 
 export class Controller {
@@ -11,6 +13,8 @@ export class Controller {
   private planner: Planner;
   private evaluator: Evaluator;
   private sniper: Sniper;
+  private observer: Observer;
+  private comparator: Comparator;
   private llm: LLMInterface;
   private memory: MemorySystem;
 
@@ -31,6 +35,8 @@ export class Controller {
     this.planner = new Planner(this.llm, this.memory);
     this.evaluator = new Evaluator(this.llm);
     this.sniper = new Sniper();
+    this.observer = new Observer();
+    this.comparator = new Comparator();
   }
 
   async runCycle(objective: string, context: any[]) {
@@ -67,7 +73,34 @@ export class Controller {
       }
     }
 
-    return { observations, plan: rankedTasks, results };
+    // 5. Observe & Compare — build the reality feedback loop
+    const evaluations = results.map((result: any, index: number) => {
+      const task = rankedTasks[index];
+      if (!task) {
+        logEvent('controller_evaluation_skipped', { reason: 'no matching task for result index', index });
+        return null;
+      }
+      const expected = task.expected ?? task.description ?? 'NO_EXPECTED_OUTCOME';
+      const observation = this.observer.observe(result);
+      const evaluation = this.comparator.compare(expected, observation);
+      logEvent('controller_evaluation', { taskId: task.id, expected, observation, evaluation });
+      return { taskId: task.id, expected, observation, evaluation };
+    }).filter((ev): ev is NonNullable<typeof ev> => ev !== null);
+
+    // 6. Persist evaluations into memory so the agent learns from outcomes
+    for (const ev of evaluations) {
+      this.memory.addEvent({
+        type: 'evaluation',
+        taskId: ev.taskId,
+        expected: ev.expected,
+        actual: ev.observation.actual_outcome,
+        success: ev.evaluation.success,
+        score: ev.evaluation.score,
+        delta: ev.evaluation.delta,
+      });
+    }
+
+    return { observations, plan: rankedTasks, results, evaluations };
   }
 
   /**
