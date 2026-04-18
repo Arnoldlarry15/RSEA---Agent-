@@ -12,6 +12,7 @@ export interface Task {
   description: string;
   status: 'pending' | 'active' | 'completed' | 'failed';
   parallelNode?: boolean;
+  expected?: string;
 }
 
 export class Planner {
