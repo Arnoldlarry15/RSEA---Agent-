@@ -1,17 +1,14 @@
 import { LLMInterface } from '../cognition/llm';
 import { MemorySystem } from './memory';
-import { GoalManager } from './goals';
 import { logEvent } from '../utils/logger';
 
 export class Reflector {
   private llm: LLMInterface;
   private memory: MemorySystem;
-  private goals: GoalManager | null;
 
-  constructor(llm: LLMInterface, memory: MemorySystem, goals: GoalManager | null = null) {
+  constructor(llm: LLMInterface, memory: MemorySystem) {
     this.llm = llm;
     this.memory = memory;
-    this.goals = goals;
   }
 
   async reflect(observations: any, thoughts: any, actions: any, results: any) {
@@ -42,12 +39,6 @@ export class Reflector {
 
         this.memory.remember(key, summary.insight, embedding, importance);
         logEvent('reflect_insight', { key, insight: summary.insight, importance });
-
-        // Feed reflection back into goal planning when a GoalManager is wired in
-        if (this.goals && Array.isArray(summary.suggested_subtasks) && summary.suggested_subtasks.length > 0) {
-          this.goals.updateSubTasks(summary.suggested_subtasks);
-          logEvent('reflect_goal_update', { suggested_subtasks: summary.suggested_subtasks });
-        }
         
         return summary.insight;
       }

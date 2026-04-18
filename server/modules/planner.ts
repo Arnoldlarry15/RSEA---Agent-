@@ -30,13 +30,6 @@ export class Planner {
       tasks: [{ id: 't1', description, status: 'pending' }]
     });
 
-    // Pull recent context from memory to inform planning (strategic retrieval)
-    const recentMemory = this.memory.getRecentContext?.() ?? [];
-    const enrichedContext = [
-      ...context,
-      ...(recentMemory.length > 0 ? [{ type: 'memory_context', events: recentMemory.slice(0, 5) }] : [])
-    ];
-
     // Generate decomposition tree
     if (!this.llm.healthCheck()) {
       return fallbackPlan('Simulated atomic task');
@@ -54,7 +47,7 @@ OUTPUT PROTOCOL (STRICT JSON):
 }`;
 
     const userPrompt = `OBJECTIVE: ${objective}
-CONTEXT: ${JSON.stringify(enrichedContext).substring(0, 800)}`;
+CONTEXT: ${JSON.stringify(context).substring(0, 500)}`;
 
     try {
       const result = await this.llm.complete(systemPrompt, userPrompt);

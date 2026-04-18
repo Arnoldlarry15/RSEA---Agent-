@@ -8,7 +8,7 @@ vi.mock('../../../server/utils/logger', () => ({
 // Stub Agent so the loop tests don't spin up a real SQLite DB or LLM
 vi.mock('../../../server/core/agent', () => {
   class Agent {
-    runCycle = vi.fn().mockResolvedValue({ observations: [], plan: [], results: [], state: 'IDLE', goalCompleted: false });
+    runCycle = vi.fn().mockResolvedValue({ observations: [], plan: [], results: [] });
     checkHealth = vi.fn().mockReturnValue({ status: 'healthy', components: {} });
     getGoals = vi.fn().mockReturnValue({ getGoals: () => ({ primary: 'goal', subTasks: [] }) });
     getMemory = vi.fn().mockReturnValue({
@@ -16,7 +16,6 @@ vi.mock('../../../server/core/agent', () => {
       addEvent: vi.fn(),
     });
     addInstruction = vi.fn();
-    getState = vi.fn().mockReturnValue('IDLE');
   }
   return { Agent };
 });

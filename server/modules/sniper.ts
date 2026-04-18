@@ -1,17 +1,14 @@
 import { Executor } from './executor';
 import { RulesEngine } from '../core/rules';
-import { ToolValidator } from './validator';
 import { logEvent } from '../utils/logger';
 
 export class Sniper {
   private executor: Executor;
   private rulesEngine: RulesEngine;
-  private validator: ToolValidator;
 
   constructor() {
     this.executor = new Executor();
     this.rulesEngine = new RulesEngine();
-    this.validator = new ToolValidator();
   }
 
   async executeSurgicalStrike(task: any) {
@@ -30,13 +27,6 @@ export class Sniper {
       tool: task.tool || 'simulate',
       payload: task.payload || { info: task.description }
     };
-
-    // Zero-trust LLM gate — validate before execution
-    const validation = this.validator.validate(action);
-    if (!validation.valid) {
-      logEvent('sniper_blocked', { reason: validation.reason, task });
-      return [{ status: 'blocked', timestamp: new Date().toISOString(), action: task, outcome: `Action blocked by ToolValidator: ${validation.reason}`, priority: 'STANDARD' }];
-    }
 
     // Use executor layer to do the physical execution
     return await this.executor.execute([action]);

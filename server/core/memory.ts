@@ -151,25 +151,6 @@ export class MemorySystem {
     return { shortTerm, longTerm };
   }
 
-  getRecentContext(limit: number = 10): any[] {
-    const rows = this.db.prepare(
-      'SELECT timestamp, data FROM short_term ORDER BY id DESC LIMIT ?'
-    ).all(limit) as any[];
-    return rows.reverse().map(row => {
-      try {
-        return { ...JSON.parse(row.data), timestamp: row.timestamp };
-      } catch (e) {
-        return { data: row.data, timestamp: row.timestamp };
-      }
-    });
-  }
-
-  /** Applies an importance decay multiplier to all long-term memories.
-   *  Useful for de-prioritising stale knowledge over time. */
-  applyDecay(factor: number = 0.95) {
-    this.db.prepare('UPDATE long_term SET importance = MAX(0.01, importance * ?)').run(factor);
-  }
-
   healthCheck(): boolean {
     try {
       this.db.prepare('SELECT 1').get();
