@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 import { Executor } from '../../../server/modules/executor';
 
 // Suppress logger output during tests
@@ -359,4 +361,135 @@ describe('Executor', () => {
       expect(results[0].outcome).toContain('threadId');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Extended result shape (new fields)
+  // ---------------------------------------------------------------------------
+  describe('extended result shape', () => {
+    it('legacy tools include success, error, side_effects, confidence fields', async () => {
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'x' } }
+      ]);
+      expect(results[0]).toHaveProperty('success');
+      expect(results[0]).toHaveProperty('error');
+      expect(results[0]).toHaveProperty('side_effects');
+      expect(results[0]).toHaveProperty('confidence');
+      expect(results[0].success).toBe(true);
+      vi.restoreAllMocks();
+    });
+
+    it('failed legacy tools have success:false and non-null error', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'nonexistent_tool', payload: {} }
+      ]);
+      expect(results[0].success).toBe(false);
+      expect(results[0].error).not.toBeNull();
+    });
+
+    it('dry-run results include the new fields', async () => {
+      process.env.DRY_RUN = 'true';
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: '' } }
+      ]);
+      expect(results[0].status).toBe('dry_run');
+      expect(results[0]).toHaveProperty('success');
+      expect(results[0]).toHaveProperty('side_effects');
+      delete process.env.DRY_RUN;
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // ExecutionConstraints
+  // ---------------------------------------------------------------------------
+  describe('ExecutionConstraints', () => {
+    it('blocks a tool not in constraints.allowedTools', async () => {
+      const results = await executor.execute(
+        [{ action: 'strike', tool: 'simulate', payload: { info: '' } }],
+        { allowedTools: ['api_fetch'] }
+      );
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].success).toBe(false);
+    });
+
+    it('allows a tool present in constraints.allowedTools', async () => {
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      const results = await executor.execute(
+        [{ action: 'strike', tool: 'simulate', payload: { info: '' } }],
+        { allowedTools: ['simulate'] }
+      );
+      expect(results[0].status).toBe('simulated');
+      vi.restoreAllMocks();
+    });
+
+    it('constraints.dryRun=true overrides DRY_RUN env', async () => {
+      process.env.DRY_RUN = 'false';
+      const results = await executor.execute(
+        [{ action: 'strike', tool: 'simulate', payload: { info: '' } }],
+        { dryRun: true }
+      );
+      expect(results[0].status).toBe('dry_run');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tool registry integration (http_request / file_read / file_write / webhook)
+  // ---------------------------------------------------------------------------
+  describe('registry tool dispatch', () => {
+    it('dispatches http_request to HTTPTool and returns structured output', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'text/plain' },
+        text: async () => 'response body',
+      }) as any);
+
+      const results = await executor.execute([
+        { action: 'strike', tool: 'http_request', payload: { url: 'https://api.example.com/data' } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].success).toBe(true);
+      expect(results[0].result.status).toBe(200);
+      expect(results[0].side_effects[0].type).toBe('http_request');
+      vi.unstubAllGlobals();
+    });
+
+    it('http_request returns blocked-like failure on SSRF target', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'http_request', payload: { url: 'http://localhost/secret' } }
+      ]);
+      expect(results[0].success).toBe(false);
+      expect(results[0].error).toContain('SSRF');
+    });
+
+    it('dispatches webhook to WebhookTool and returns structured output', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }) as any);
+      const results = await executor.execute([
+        { action: 'strike', tool: 'webhook', payload: { url: 'https://hooks.example.com/signal', payload: { msg: 'hi' } } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].success).toBe(true);
+      expect(results[0].side_effects[0].type).toBe('webhook_sent');
+      vi.unstubAllGlobals();
+    });
+
+    it('dispatches file_write + file_read via registry', async () => {
+      const writeResults = await executor.execute([
+        { action: 'strike', tool: 'file_write', payload: { path: '_executor_test.txt', content: 'hello registry' } }
+      ]);
+      expect(writeResults[0].status).toBe('executed');
+      expect(writeResults[0].success).toBe(true);
+
+      const readResults = await executor.execute([
+        { action: 'strike', tool: 'file_read', payload: { path: '_executor_test.txt' } }
+      ]);
+      expect(readResults[0].status).toBe('executed');
+      expect(readResults[0].result).toBe('hello registry');
+
+      // cleanup
+      const f = path.join(process.cwd(), 'data', '_executor_test.txt');
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    });
+  });
 });
+

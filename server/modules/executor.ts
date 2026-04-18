@@ -4,6 +4,7 @@ import { promisify } from 'util';
 import { logEvent } from '../utils/logger';
 import { isSsrfTarget } from '../utils/ssrf';
 import { sendMessage as moltbookSend, fetchThread as moltbookFetch } from '../adapters/moltbook';
+import { ToolRegistry, createDefaultRegistry } from '../core/tools/index';
 
 const execFileAsync = promisify(execFile);
 
@@ -73,28 +74,92 @@ async function fetchWithRetry(url: string, options: RequestInit = {}): Promise<R
   throw lastErr;
 }
 
+export interface ExecutionConstraints {
+  /** Override the global DRY_RUN setting for this batch of actions. */
+  dryRun?: boolean;
+  /** If provided, only tools in this list are permitted. */
+  allowedTools?: string[];
+  /** Per-request timeout override in milliseconds. */
+  timeout?: number;
+}
+
 export class Executor {
+  private registry: ToolRegistry;
+
+  constructor(registry?: ToolRegistry) {
+    this.registry = registry ?? createDefaultRegistry();
+  }
+
   /**
    * Executes tools, code, or APIs based on decision outputs.
+   * @param actions  Array of action objects produced by the planner/sniper.
+   * @param constraints  Optional runtime constraints (dryRun, allowedTools, timeout).
    */
-  async execute(actions: any[]) {
+  async execute(actions: any[], constraints?: ExecutionConstraints) {
     const results = [];
     
     for (const action of actions) {
-      logEvent('executor_start', { action, dryRun: isDryRun() });
+      const effectiveDryRun = constraints?.dryRun ?? isDryRun();
+      logEvent('executor_start', { action, dryRun: effectiveDryRun });
+
+      // Constraints: optional tool allowlist
+      if (constraints?.allowedTools && !constraints.allowedTools.includes(action.tool)) {
+        logEvent('executor_blocked', { reason: 'Tool not in constraints.allowedTools', tool: action.tool });
+        results.push({
+          status: 'blocked',
+          timestamp: new Date().toISOString(),
+          action,
+          outcome: `Tool '${action.tool}' is not permitted by execution constraints`,
+          priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD',
+          result: null,
+          success: false,
+          error: `Tool '${action.tool}' is not permitted by execution constraints`,
+          side_effects: [],
+          confidence: 0,
+        });
+        continue;
+      }
 
       // In dry-run mode skip actual execution and return a simulated result
-      if (isDryRun()) {
+      if (effectiveDryRun) {
         results.push({
           status: 'dry_run',
           timestamp: new Date().toISOString(),
           action,
           outcome: `DRY RUN — would have executed tool '${action.tool}'`,
           priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD',
+          result: null,
+          success: false,
+          error: null,
+          side_effects: [],
+          confidence: 0,
         });
         continue;
       }
 
+      // --- Dispatch to tool registry first ---
+      const registryTool = this.registry.get(action.tool);
+      if (registryTool) {
+        const toolResult = await registryTool.execute(action.payload ?? {});
+        logEvent('executor_result', { tool: action.tool, success: toolResult.success, error: toolResult.error });
+        results.push({
+          status: toolResult.success ? 'executed' : (toolResult.error?.includes('blocked') ? 'blocked' : 'failed'),
+          timestamp: new Date().toISOString(),
+          action,
+          outcome: toolResult.success
+            ? `Tool '${action.tool}' executed successfully`
+            : (toolResult.error ?? 'Unknown error'),
+          priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD',
+          result: toolResult.result,
+          success: toolResult.success,
+          error: toolResult.error,
+          side_effects: toolResult.side_effects,
+          confidence: toolResult.confidence,
+        });
+        continue;
+      }
+
+      // --- Legacy built-in tools ---
       let outcome = 'Success';
       let status = 'executed';
       
@@ -212,7 +277,12 @@ export class Executor {
         timestamp: new Date().toISOString(),
         action,
         outcome,
-        priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD'
+        priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD',
+        result: outcome,
+        success: status === 'executed' || status === 'simulated',
+        error: status === 'failed' ? outcome : null,
+        side_effects: [],
+        confidence: status === 'executed' || status === 'simulated' ? 1.0 : 0,
       });
     }
 
