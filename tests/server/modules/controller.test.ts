@@ -176,5 +176,74 @@ describe('Controller', () => {
       expect(controller.getModifiers()).toEqual(['be bold', 'preserve capital']);
     });
   });
+
+  // ── Phase 5: Strategy Management ────────────────────────────────────────
+
+  describe('getStrategy', () => {
+    it('returns the default strategy config on construction', () => {
+      const strategy = controller.getStrategy();
+      expect(strategy.exploration_rate).toBe(0.2);
+      expect(strategy.risk_tolerance).toBe(0.5);
+      expect(strategy.tool_preference).toEqual({});
+    });
+
+    it('returns a deep copy so mutations do not affect internal state', () => {
+      const strategy = controller.getStrategy();
+      strategy.exploration_rate = 0.99;
+      expect(controller.getStrategy().exploration_rate).toBe(0.2);
+    });
+  });
+
+  describe('updateStrategy', () => {
+    it('updates exploration_rate', () => {
+      controller.updateStrategy({ exploration_rate: 0.4 }, 'raised exploration', 2);
+      expect(controller.getStrategy().exploration_rate).toBe(0.4);
+    });
+
+    it('updates risk_tolerance', () => {
+      controller.updateStrategy({ risk_tolerance: 0.8 }, 'higher risk', 3);
+      expect(controller.getStrategy().risk_tolerance).toBe(0.8);
+    });
+
+    it('updates tool_preference', () => {
+      controller.updateStrategy({ tool_preference: { search: 0.9 } }, 'prefer search', 1);
+      expect(controller.getStrategy().tool_preference.search).toBe(0.9);
+    });
+
+    it('commits a new version to history', () => {
+      const beforeLen = controller.getStrategyHistory().length;
+      controller.updateStrategy({ exploration_rate: 0.3 }, 'test update', 1);
+      expect(controller.getStrategyHistory().length).toBe(beforeLen + 1);
+    });
+
+    it('does not update when no mutable fields are provided', () => {
+      const beforeLen = controller.getStrategyHistory().length;
+      controller.updateStrategy({} as any, 'no-op', 0);
+      expect(controller.getStrategyHistory().length).toBe(beforeLen);
+    });
+
+    it('ignores unknown fields and does not commit', () => {
+      const beforeLen = controller.getStrategyHistory().length;
+      controller.updateStrategy({ unknown_field: 99 } as any, 'bad field', 0);
+      expect(controller.getStrategyHistory().length).toBe(beforeLen);
+    });
+  });
+
+  describe('getStrategyHistory', () => {
+    it('starts with the baseline initial commit', () => {
+      const history = controller.getStrategyHistory();
+      expect(history.length).toBeGreaterThanOrEqual(1);
+      expect(history[0].change).toBe('initial baseline');
+    });
+
+    it('accumulates one entry per updateStrategy call', () => {
+      controller.updateStrategy({ exploration_rate: 0.3 }, 'first', 1);
+      controller.updateStrategy({ risk_tolerance: 0.7 }, 'second', 2);
+      const history = controller.getStrategyHistory();
+      const changes = history.map((h) => h.change);
+      expect(changes).toContain('first');
+      expect(changes).toContain('second');
+    });
+  });
 });
 
