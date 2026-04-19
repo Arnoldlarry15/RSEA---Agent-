@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Executor } from '../../../server/modules/executor';
+import fs from 'fs';
+import path from 'path';
+import { Executor, _simulateRng } from '../../../server/modules/executor';
 
 // Suppress logger output during tests
 vi.mock('../../../server/utils/logger', () => ({
@@ -18,6 +20,12 @@ describe('Executor', () => {
   beforeEach(() => {
     executor = new Executor();
     delete process.env.ALLOWED_COMMANDS;
+    // Disable dry-run mode for all executor tests (safe default is true at runtime)
+    process.env.DRY_RUN = 'false';
+  });
+
+  afterEach(() => {
+    delete process.env.DRY_RUN;
   });
 
   // ---------------------------------------------------------------------------
@@ -25,7 +33,7 @@ describe('Executor', () => {
   // ---------------------------------------------------------------------------
   describe('simulate tool', () => {
     it('returns status "simulated" and a success outcome', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5); // Not > 0.95 → success
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5); // Not > 0.95 → success
       const results = await executor.execute([
         { action: 'strike', tool: 'simulate', payload: { info: 'test task' } }
       ]);
@@ -35,13 +43,24 @@ describe('Executor', () => {
       vi.restoreAllMocks();
     });
 
-    it('returns an Anomaly outcome when Math.random() > 0.95', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    it('returns an Anomaly outcome when luck > 0.95', async () => {
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.99);
       const results = await executor.execute([
         { action: 'strike', tool: 'simulate', payload: { info: 'anomaly task' } }
       ]);
       expect(results[0].outcome).toContain('Anomaly');
       vi.restoreAllMocks();
+    });
+
+    it('returns a deterministic outcome for the same payload info', async () => {
+      const results1 = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'deterministic-task-abc' } }
+      ]);
+      const results2 = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'deterministic-task-abc' } }
+      ]);
+      expect(results1[0].outcome).toBe(results2[0].outcome);
+      expect(results1[0].status).toBe(results2[0].status);
     });
   });
 
@@ -164,7 +183,7 @@ describe('Executor', () => {
   // ---------------------------------------------------------------------------
   describe('code_eval tool', () => {
     beforeEach(() => {
-      // code_eval requires explicit opt-in via ALLOW_CODE_EVAL=true
+      // SEC-3: code_eval requires explicit opt-in via ALLOW_CODE_EVAL=true
       process.env.ALLOW_CODE_EVAL = 'true';
     });
 
@@ -212,6 +231,29 @@ describe('Executor', () => {
       expect(results[0].status).toBe('failed');
       expect(results[0].outcome).toContain('too large');
     });
+
+    it('blocks code that contains a sandbox-escape pattern (G7)', async () => {
+      for (const dangerousCode of [
+        'process.exit(1)',
+        'require("fs")',
+        'this.constructor["prototype"]',
+        'globalThis.x = 1',
+      ]) {
+        const results = await executor.execute([
+          { action: 'strike', tool: 'code_eval', payload: { code: dangerousCode } }
+        ]);
+        expect(results[0].status).toBe('blocked');
+        expect(results[0].outcome).toContain('blocked');
+      }
+    });
+
+    it('allows safe code that does not match any escape pattern', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'code_eval', payload: { code: 'console.log("safe code")' } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].outcome).toContain('safe code');
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -242,6 +284,15 @@ describe('Executor', () => {
       expect(results[0].status).toBe('executed');
       expect(results[0].outcome).toContain('hello');
     });
+
+    it('blocks a command when an argument contains unsafe characters', async () => {
+      process.env.ALLOWED_COMMANDS = 'echo';
+      const results = await executor.execute([
+        { action: 'strike', tool: 'system_command', payload: { command: 'echo $(whoami)' } }
+      ]);
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].outcome).toContain('unsafe');
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -249,7 +300,7 @@ describe('Executor', () => {
   // ---------------------------------------------------------------------------
   describe('result shape', () => {
     it('marks priority "CRITICAL" for priority_alert actions', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const results = await executor.execute([
         { action: 'priority_alert', tool: 'simulate', payload: { info: '' } }
       ]);
@@ -258,7 +309,7 @@ describe('Executor', () => {
     });
 
     it('marks priority "STANDARD" for non-alert actions', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const results = await executor.execute([
         { action: 'surgical_strike', tool: 'simulate', payload: { info: '' } }
       ]);
@@ -267,7 +318,7 @@ describe('Executor', () => {
     });
 
     it('includes a timestamp on each result', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const results = await executor.execute([
         { action: 'strike', tool: 'simulate', payload: { info: '' } }
       ]);
@@ -276,7 +327,7 @@ describe('Executor', () => {
     });
 
     it('processes multiple actions and returns one result per action', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const results = await executor.execute([
         { action: 'strike', tool: 'simulate', payload: { info: 'a' } },
         { action: 'strike', tool: 'simulate', payload: { info: 'b' } },
@@ -342,6 +393,213 @@ describe('Executor', () => {
       ]);
       expect(results[0].status).toBe('failed');
       expect(results[0].outcome).toContain('threadId');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Extended result shape (new fields)
+  // ---------------------------------------------------------------------------
+  describe('extended result shape', () => {
+    it('legacy tools include success, error, side_effects, confidence fields', async () => {
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'x' } }
+      ]);
+      expect(results[0]).toHaveProperty('success');
+      expect(results[0]).toHaveProperty('error');
+      expect(results[0]).toHaveProperty('side_effects');
+      expect(results[0]).toHaveProperty('confidence');
+      expect(results[0].success).toBe(true);
+      vi.restoreAllMocks();
+    });
+
+    it('failed legacy tools have success:false and non-null error', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'nonexistent_tool', payload: {} }
+      ]);
+      expect(results[0].success).toBe(false);
+      expect(results[0].error).not.toBeNull();
+    });
+
+    it('dry-run results include the new fields', async () => {
+      process.env.DRY_RUN = 'true';
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: '' } }
+      ]);
+      expect(results[0].status).toBe('dry_run');
+      expect(results[0]).toHaveProperty('success');
+      expect(results[0]).toHaveProperty('side_effects');
+      delete process.env.DRY_RUN;
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // ExecutionConstraints
+  // ---------------------------------------------------------------------------
+  describe('ExecutionConstraints', () => {
+    it('blocks a tool not in constraints.allowedTools', async () => {
+      const results = await executor.execute(
+        [{ action: 'strike', tool: 'simulate', payload: { info: '' } }],
+        { allowedTools: ['api_fetch'] }
+      );
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].success).toBe(false);
+    });
+
+    it('allows a tool present in constraints.allowedTools', async () => {
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
+      const results = await executor.execute(
+        [{ action: 'strike', tool: 'simulate', payload: { info: '' } }],
+        { allowedTools: ['simulate'] }
+      );
+      expect(results[0].status).toBe('simulated');
+      vi.restoreAllMocks();
+    });
+
+    it('constraints.dryRun=true overrides DRY_RUN env', async () => {
+      process.env.DRY_RUN = 'false';
+      const results = await executor.execute(
+        [{ action: 'strike', tool: 'simulate', payload: { info: '' } }],
+        { dryRun: true }
+      );
+      expect(results[0].status).toBe('dry_run');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tool registry integration (http_request / file_read / file_write / webhook)
+  // ---------------------------------------------------------------------------
+  describe('registry tool dispatch', () => {
+    it('dispatches http_request to HTTPTool and returns structured output', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'text/plain' },
+        text: async () => 'response body',
+      }) as any);
+
+      const results = await executor.execute([
+        { action: 'strike', tool: 'http_request', payload: { url: 'https://api.example.com/data' } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].success).toBe(true);
+      expect(results[0].result.status).toBe(200);
+      expect(results[0].side_effects[0].type).toBe('http_request');
+      vi.unstubAllGlobals();
+    });
+
+    it('http_request returns blocked-like failure on SSRF target', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'http_request', payload: { url: 'http://localhost/secret' } }
+      ]);
+      expect(results[0].success).toBe(false);
+      expect(results[0].error).toContain('SSRF');
+    });
+
+    it('dispatches webhook to WebhookTool and returns structured output', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }) as any);
+      const results = await executor.execute([
+        { action: 'strike', tool: 'webhook', payload: { url: 'https://hooks.example.com/signal', payload: { msg: 'hi' } } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].success).toBe(true);
+      expect(results[0].side_effects[0].type).toBe('webhook_sent');
+      vi.unstubAllGlobals();
+    });
+
+    it('dispatches file_write + file_read via registry', async () => {
+      const writeResults = await executor.execute([
+        { action: 'strike', tool: 'file_write', payload: { path: '_executor_test.txt', content: 'hello registry' } }
+      ]);
+      expect(writeResults[0].status).toBe('executed');
+      expect(writeResults[0].success).toBe(true);
+
+      const readResults = await executor.execute([
+        { action: 'strike', tool: 'file_read', payload: { path: '_executor_test.txt' } }
+      ]);
+      expect(readResults[0].status).toBe('executed');
+      expect(readResults[0].result).toBe('hello registry');
+
+      // cleanup
+      const f = path.join(process.cwd(), 'data', '_executor_test.txt');
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // RulesEngine constraint gate (validate() integration)
+  // ---------------------------------------------------------------------------
+  describe('RulesEngine constraint gate', () => {
+    afterEach(() => {
+      delete process.env.MAX_ACTIONS_PER_CYCLE;
+      delete process.env.RISK_THRESHOLD;
+      delete process.env.ACTION_TIMEOUT_MS;
+      delete process.env.RULE_ALLOWED_TOOLS;
+    });
+
+    it('blocks an action whose risk exceeds RISK_THRESHOLD', async () => {
+      process.env.RISK_THRESHOLD = '50';
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'risky' }, risk: 75 }
+      ]);
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].outcome).toContain('risk score');
+      expect(results[0].success).toBe(false);
+    });
+
+    it('allows an action whose risk is at or below RISK_THRESHOLD', async () => {
+      process.env.RISK_THRESHOLD = '50';
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'safe' }, risk: 50 }
+      ]);
+      expect(results[0].status).toBe('simulated');
+      vi.restoreAllMocks();
+    });
+
+    it('blocks an action when the per-cycle action count is exhausted', async () => {
+      process.env.MAX_ACTIONS_PER_CYCLE = '1';
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'first' } },
+        { action: 'strike', tool: 'simulate', payload: { info: 'second' } },
+      ]);
+      expect(results[0].status).toBe('simulated');
+      expect(results[1].status).toBe('blocked');
+      expect(results[1].outcome).toContain('Cycle action limit');
+      vi.restoreAllMocks();
+    });
+
+    it('resets the per-cycle counter between execute() calls', async () => {
+      process.env.MAX_ACTIONS_PER_CYCLE = '1';
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
+      const first = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'a' } }
+      ]);
+      const second = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'b' } }
+      ]);
+      expect(first[0].status).toBe('simulated');
+      expect(second[0].status).toBe('simulated');
+      vi.restoreAllMocks();
+    });
+
+    it('blocks a tool not in RULE_ALLOWED_TOOLS', async () => {
+      process.env.RULE_ALLOWED_TOOLS = 'api_fetch';
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: {} }
+      ]);
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].outcome).toContain('RULE_ALLOWED_TOOLS');
+    });
+
+    it('blocks an action whose timeout exceeds ACTION_TIMEOUT_MS', async () => {
+      process.env.ACTION_TIMEOUT_MS = '2000';
+      const results = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: {}, timeout: 9999 }
+      ]);
+      expect(results[0].status).toBe('blocked');
+      expect(results[0].outcome).toContain('timeout');
     });
   });
 });

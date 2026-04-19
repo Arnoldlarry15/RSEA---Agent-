@@ -16,9 +16,13 @@ const MEMORY_FILE = path.join(DATA_DIR, 'memory.db');
 
 export class MemorySystem {
   private db: Database.Database;
+  private sessionInsertCount: number = 0;
+  private static readonly SESSION_PRUNE_INTERVAL = 100;
+  private static readonly SESSION_DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   constructor(dbPath: string = MEMORY_FILE) {
     this.db = new Database(dbPath);
+    this.db.pragma('journal_mode = WAL');
     sqliteVec.load(this.db);
     this.initDb();
   }
@@ -187,6 +191,17 @@ export class MemorySystem {
     this.db.prepare(
       'INSERT INTO session_memory (session_id, timestamp, data) VALUES (?, ?, ?)'
     ).run(sessionId, timestamp, dataStr);
+
+    this.sessionInsertCount++;
+    if (this.sessionInsertCount % MemorySystem.SESSION_PRUNE_INTERVAL === 0) {
+      this.pruneSessionMemory(MemorySystem.SESSION_DEFAULT_MAX_AGE_MS);
+    }
+  }
+
+  /** Delete session_memory rows older than maxAgeMs milliseconds. */
+  pruneSessionMemory(maxAgeMs: number = MemorySystem.SESSION_DEFAULT_MAX_AGE_MS) {
+    const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
+    this.db.prepare('DELETE FROM session_memory WHERE timestamp < ?').run(cutoff);
   }
 
   /** Return all events recorded for a given session, oldest first. */

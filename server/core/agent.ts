@@ -6,6 +6,13 @@ import { Reflector } from './reflector';
 import { AgentState } from './state';
 import { logEvent } from '../utils/logger';
 import type { AgentInput, AgentOutput } from '../interfaces/agent';
+import { EpisodicMemory } from '../memory/episodic';
+import { SemanticMemory } from '../memory/semantic';
+import { StrategicMemory } from '../memory/strategic';
+import { MemoryRetriever } from '../memory/retriever';
+import { PatternExtractor } from '../memory/patterns';
+import { runtimeEvents } from './runtime/events';
+import { AgentStatePersistence } from './runtime/persistence';
 
 export class Agent {
   private llm: LLMInterface;
@@ -15,16 +22,56 @@ export class Agent {
   private controller: Controller;
   private manualInstructions: string[] = [];
 
+  // Typed memory tiers
+  private episodic: EpisodicMemory;
+  private semantic: SemanticMemory;
+  private strategic: StrategicMemory;
+  private retriever: MemoryRetriever;
+  private patternExtractor: PatternExtractor;
+
   private currentState: AgentState = AgentState.IDLE;
   private consecutiveFailures: number = 0;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
+
+  /** Run pattern extraction every N cycles to surface learned behaviours. */
+  private cycleCount: number = 0;
+  private static readonly PATTERN_EXTRACT_EVERY_N_CYCLES = 5;
+
+  /** Last plan produced by the Controller — persisted for restart recovery. */
+  private lastActivePlan: any[] | null = null;
+
+  /** Persistence layer for cross-restart state survival. */
+  private persistence: AgentStatePersistence;
 
   constructor() {
     this.llm = new LLMInterface();
     this.memory = new MemorySystem();
     this.goals = new GoalManager();
+
+    // Initialise the three memory tiers backed by the shared MemorySystem
+    this.episodic = new EpisodicMemory(this.memory);
+    this.semantic = new SemanticMemory(this.memory);
+    this.strategic = new StrategicMemory(this.memory);
+
+    // Retriever aggregates all tiers for planner injection
+    this.retriever = new MemoryRetriever(this.episodic, this.semantic, this.strategic);
+
+    // Background pattern extractor
+    this.patternExtractor = new PatternExtractor(this.episodic, this.semantic, this.strategic);
+
     this.reflector = new Reflector(this.llm, this.memory, this.goals);
-    this.controller = new Controller(this.llm, this.memory);
+    this.controller = new Controller(this.llm, this.memory, this.retriever);
+
+    // Initialise persistence and attempt to restore state from a previous run
+    this.persistence = new AgentStatePersistence(this.memory);
+    const savedState = this.persistence.load();
+    if (savedState) {
+      this.goals.restore(savedState.goals);
+      if (savedState.activePlan) {
+        this.lastActivePlan = savedState.activePlan;
+      }
+      logEvent('agent_state_restored', { savedAt: savedState.savedAt });
+    }
   }
 
   async runCycle(): Promise<AgentOutput> {
@@ -72,6 +119,10 @@ export class Agent {
       if (this.consecutiveFailures >= Agent.MAX_CONSECUTIVE_FAILURES) {
         this.goals.markFailed();
         logEvent('agent_goal_failed', { reason: 'max_consecutive_failures' });
+        runtimeEvents.emitFailureSpike({
+          consecutiveFailures: this.consecutiveFailures,
+          lastError: err.message || String(err),
+        });
       }
       throw err;
     }
@@ -88,6 +139,38 @@ export class Agent {
     const executedActions = cycleData.results.map((r: any) => r.action);
     await this.reflector.reflect(cycleData.observations, cycleData.plan, executedActions, cycleData.results);
 
+    // Background pattern extraction: runs every N cycles so the agent progressively
+    // learns from repeated failures and successful strategies stored in memory.
+    this.cycleCount++;
+    if (this.cycleCount % Agent.PATTERN_EXTRACT_EVERY_N_CYCLES === 0) {
+      const patterns = this.patternExtractor.extract();
+      if (patterns.length > 0) {
+        logEvent('pattern_extraction', { patternsFound: patterns.length, patterns });
+      }
+    }
+
+    // Persist state so the agent survives restarts
+    this.lastActivePlan = cycleData.plan;
+    this.persistence.save({
+      goals: {
+        primary: currentGoals.primary,
+        subTasks: currentGoals.subTasks,
+        status: this.goals.getStatus(),
+        successCriteria: this.goals.getSuccessCriteria(),
+      },
+      activePlan: this.lastActivePlan,
+      strategyVersion: null,
+      savedAt: new Date().toISOString(),
+    });
+
+    // Emit opportunity_detected whenever the spotter returns actionable observations
+    if (cycleData.observations && cycleData.observations.length > 0) {
+      runtimeEvents.emitOpportunityDetected({
+        opportunityCount: cycleData.observations.length,
+        observations: cycleData.observations,
+      });
+    }
+
     this.currentState = AgentState.IDLE;
     return {
       observations: cycleData.observations,
@@ -99,9 +182,14 @@ export class Agent {
   }
 
   addInstruction(text: string) {
+    if (this.manualInstructions.length >= 100) {
+      console.warn('[Agent] Instruction queue is full (100 items). Dropping new instruction.');
+      return;
+    }
     this.manualInstructions.push(text);
     this.memory.addEvent({ type: 'user_command', data: text });
     logEvent('command', text);
+    runtimeEvents.emitNewInput({ instruction: text, timestamp: new Date().toISOString() });
   }
 
   processInput(input: AgentInput) {

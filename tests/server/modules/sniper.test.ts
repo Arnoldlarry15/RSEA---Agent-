@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Sniper } from '../../../server/modules/sniper';
 
 vi.mock('../../../server/utils/logger', () => ({
@@ -20,7 +20,13 @@ describe('Sniper', () => {
   let sniper: Sniper;
 
   beforeEach(() => {
+    // Set DECISION_AGGRESSIVENESS=1 so tests are not sensitive to the default value
+    process.env.DECISION_AGGRESSIVENESS = '1';
     sniper = new Sniper();
+  });
+
+  afterEach(() => {
+    delete process.env.DECISION_AGGRESSIVENESS;
   });
 
   it('blocks a task that scores at or below 60', async () => {

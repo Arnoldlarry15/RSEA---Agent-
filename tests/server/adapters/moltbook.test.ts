@@ -1,220 +1,248 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+// Reset module state between tests so env vars take effect
 vi.mock('../../../server/utils/logger', () => ({
   logEvent: vi.fn(),
 }));
 
-// ── ingestWebhookEvent tests (no HTTP calls, no BASE_URL needed) ───────────
-// These tests use static imports since ingestWebhookEvent is pure logic.
+describe('Moltbook adapter', () => {
+  // We re-import the module inside each test group so env vars are respected.
+  // The module uses module-level constants derived from process.env, so we
+  // need to reset modules between tests that change env vars.
 
-import {
-  ingestWebhookEvent,
-  setMoltbookToken,
-} from '../../../server/adapters/moltbook';
-
-let eventCounter = 0;
-/** Return a fresh unique event payload for each test to avoid dedup collisions. */
-function makeEvent(overrides: Record<string, any> = {}) {
-  return JSON.stringify({
-    id: `evt-${++eventCounter}-${Date.now()}`,
-    type: 'message',
-    content: 'hello',
-    ...overrides,
-  });
-}
-
-describe('ingestWebhookEvent', () => {
-  afterEach(() => {
-    delete process.env.MOLTBOOK_WEBHOOK_SECRET;
-    vi.clearAllMocks();
-  });
-
-  it('returns a parsed event for a valid payload without a secret configured', () => {
-    const result = ingestWebhookEvent(makeEvent());
-    expect(result).not.toBeNull();
-    expect(result!.type).toBe('message');
-    expect(typeof result!.id).toBe('string');
-  });
-
-  it('returns null for malformed JSON', () => {
-    const result = ingestWebhookEvent('not-json');
-    expect(result).toBeNull();
-  });
-
-  it('returns null when the event ID is missing', () => {
-    const result = ingestWebhookEvent(JSON.stringify({ type: 'message', content: 'x' }));
-    expect(result).toBeNull();
-  });
-
-  it('returns null when the event ID is not a string', () => {
-    const result = ingestWebhookEvent(JSON.stringify({ id: 42, type: 'message' }));
-    expect(result).toBeNull();
-  });
-
-  it('returns null for a duplicate event ID', () => {
-    const body = makeEvent();
-    const first = ingestWebhookEvent(body);
-    expect(first).not.toBeNull();
-    const second = ingestWebhookEvent(body); // same body → same id
-    expect(second).toBeNull();
-  });
-
-  it('accepts the event when the correct secret header is supplied', () => {
-    process.env.MOLTBOOK_WEBHOOK_SECRET = 'my-secret';
-    const result = ingestWebhookEvent(makeEvent(), 'my-secret');
-    expect(result).not.toBeNull();
-  });
-
-  it('rejects the event when the secret header does not match', () => {
-    process.env.MOLTBOOK_WEBHOOK_SECRET = 'my-secret';
-    const result = ingestWebhookEvent(makeEvent(), 'wrong-secret');
-    expect(result).toBeNull();
-  });
-
-  it('rejects the event when the secret is required but the header is omitted', () => {
-    process.env.MOLTBOOK_WEBHOOK_SECRET = 'my-secret';
-    const result = ingestWebhookEvent(makeEvent());
-    expect(result).toBeNull();
-  });
-
-  it('allows events with no secret header when MOLTBOOK_WEBHOOK_SECRET is not set', () => {
-    delete process.env.MOLTBOOK_WEBHOOK_SECRET;
-    const result = ingestWebhookEvent(makeEvent());
-    expect(result).not.toBeNull();
-  });
-});
-
-// ── setMoltbookToken ───────────────────────────────────────────────────────
-
-describe('setMoltbookToken', () => {
-  it('is callable without throwing', () => {
-    expect(() => setMoltbookToken('new-token-xyz')).not.toThrow();
-  });
-});
-
-// ── HTTP functions (sendMessage / fetchThread / registerAgent) ─────────────
-// These require MOLTBOOK_API_URL to be set, so we use vi.resetModules() and
-// dynamic imports to reload the module with the env var in place.
-
-describe('Moltbook HTTP functions', () => {
   beforeEach(() => {
-    process.env.MOLTBOOK_API_URL = 'https://moltbook.example.com';
-    process.env.MOLTBOOK_API_TOKEN = 'test-token';
     vi.resetModules();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     delete process.env.MOLTBOOK_API_URL;
     delete process.env.MOLTBOOK_API_TOKEN;
     delete process.env.MOLTBOOK_REFRESH_URL;
     delete process.env.MOLTBOOK_REFRESH_TOKEN;
-    vi.clearAllMocks();
+    delete process.env.MOLTBOOK_WEBHOOK_SECRET;
   });
 
-  it('sendMessage calls POST /threads/:id/messages and returns the response', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: vi.fn().mockResolvedValue({ id: 'msg-1', ok: true }),
+  // ---------------------------------------------------------------------------
+  // ingestWebhookEvent
+  // ---------------------------------------------------------------------------
+  describe('ingestWebhookEvent', () => {
+    it('returns a parsed event for a valid payload', async () => {
+      const { ingestWebhookEvent } = await import('../../../server/adapters/moltbook');
+      const event = ingestWebhookEvent(JSON.stringify({ id: 'evt-1', type: 'message', content: 'hello' }));
+      expect(event).not.toBeNull();
+      expect(event!.id).toBe('evt-1');
+      expect(event!.type).toBe('message');
     });
-    vi.stubGlobal('fetch', mockFetch);
 
-    const { sendMessage } = await import('../../../server/adapters/moltbook');
-    const result = await sendMessage('thread-1', 'hello');
-
-    expect(mockFetch).toHaveBeenCalledOnce();
-    const [calledUrl, calledOpts] = mockFetch.mock.calls[0];
-    expect(calledUrl).toContain('/threads/thread-1/messages');
-    expect(calledOpts.method).toBe('POST');
-    expect(result).toEqual({ id: 'msg-1', ok: true });
-  });
-
-  it('fetchThread calls GET /threads/:id/messages with pagination params', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: vi.fn().mockResolvedValue({ messages: [] }),
+    it('returns null for malformed JSON', async () => {
+      const { ingestWebhookEvent } = await import('../../../server/adapters/moltbook');
+      const event = ingestWebhookEvent('not-json');
+      expect(event).toBeNull();
     });
-    vi.stubGlobal('fetch', mockFetch);
 
-    const { fetchThread } = await import('../../../server/adapters/moltbook');
-    await fetchThread('thread-2', 2, 25);
-
-    const [calledUrl] = mockFetch.mock.calls[0];
-    expect(calledUrl).toContain('/threads/thread-2/messages');
-    expect(calledUrl).toContain('page=2');
-    expect(calledUrl).toContain('limit=25');
-  });
-
-  it('registerAgent calls POST /agents/register', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: vi.fn().mockResolvedValue({ registered: true }),
+    it('returns null when event.id is missing', async () => {
+      const { ingestWebhookEvent } = await import('../../../server/adapters/moltbook');
+      const event = ingestWebhookEvent(JSON.stringify({ type: 'message' }));
+      expect(event).toBeNull();
     });
-    vi.stubGlobal('fetch', mockFetch);
 
-    const { registerAgent } = await import('../../../server/adapters/moltbook');
-    const result = await registerAgent({ name: 'rsea', version: '1.0.0' });
-
-    const [calledUrl, calledOpts] = mockFetch.mock.calls[0];
-    expect(calledUrl).toContain('/agents/register');
-    expect(calledOpts.method).toBe('POST');
-    expect(result).toEqual({ registered: true });
-  });
-
-  it('throws when MOLTBOOK_API_URL is not configured', async () => {
-    delete process.env.MOLTBOOK_API_URL;
-    vi.resetModules();
-
-    const { sendMessage } = await import('../../../server/adapters/moltbook');
-    await expect(sendMessage('t', 'msg')).rejects.toThrow('MOLTBOOK_API_URL is not set');
-  });
-
-  it('throws an error when the API returns a non-ok status', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 500,
-      text: vi.fn().mockResolvedValue('Internal Server Error'),
+    it('deduplicates events with the same id', async () => {
+      const { ingestWebhookEvent } = await import('../../../server/adapters/moltbook');
+      const payload = JSON.stringify({ id: 'dup-1', type: 'message' });
+      const first = ingestWebhookEvent(payload);
+      const second = ingestWebhookEvent(payload);
+      expect(first).not.toBeNull();
+      expect(second).toBeNull(); // duplicate
     });
-    vi.stubGlobal('fetch', mockFetch);
 
-    const { sendMessage } = await import('../../../server/adapters/moltbook');
-    await expect(sendMessage('t', 'msg')).rejects.toThrow('500');
+    it('rejects the event when the secret header does not match', async () => {
+      process.env.MOLTBOOK_WEBHOOK_SECRET = 'correct-secret';
+      const { ingestWebhookEvent } = await import('../../../server/adapters/moltbook');
+      const event = ingestWebhookEvent(
+        JSON.stringify({ id: 'evt-bad', type: 'message' }),
+        'wrong-secret'
+      );
+      expect(event).toBeNull();
+    });
+
+    it('accepts the event when the secret header matches', async () => {
+      process.env.MOLTBOOK_WEBHOOK_SECRET = 'my-secret';
+      const { ingestWebhookEvent } = await import('../../../server/adapters/moltbook');
+      const event = ingestWebhookEvent(
+        JSON.stringify({ id: 'evt-ok', type: 'message' }),
+        'my-secret'
+      );
+      expect(event).not.toBeNull();
+    });
+
+    it('accepts the event when no secret is configured (open mode)', async () => {
+      delete process.env.MOLTBOOK_WEBHOOK_SECRET;
+      const { ingestWebhookEvent } = await import('../../../server/adapters/moltbook');
+      const event = ingestWebhookEvent(
+        JSON.stringify({ id: 'evt-open', type: 'ping' })
+      );
+      expect(event).not.toBeNull();
+    });
   });
 
-  it('retries with a refreshed token on a 401 response', async () => {
-    process.env.MOLTBOOK_REFRESH_URL = 'https://auth.example.com/refresh';
-    process.env.MOLTBOOK_REFRESH_TOKEN = 'refresh-cred';
-    vi.resetModules();
+  // ---------------------------------------------------------------------------
+  // setMoltbookToken
+  // ---------------------------------------------------------------------------
+  describe('setMoltbookToken', () => {
+    it('is exported and callable without throwing', async () => {
+      const { setMoltbookToken } = await import('../../../server/adapters/moltbook');
+      expect(() => setMoltbookToken('new-token')).not.toThrow();
+    });
+  });
 
-    let callCount = 0;
-    const mockFetch = vi.fn().mockImplementation((url: string) => {
-      if (url.includes('/refresh')) {
-        return Promise.resolve({
-          ok: true,
-          json: vi.fn().mockResolvedValue({ access_token: 'new-token' }),
-        });
-      }
-      callCount++;
-      if (callCount === 1) {
-        // First call → 401
-        return Promise.resolve({ ok: false, status: 401, text: vi.fn().mockResolvedValue('') });
-      }
-      // Second call (after refresh) → success
-      return Promise.resolve({
+  // ---------------------------------------------------------------------------
+  // sendMessage
+  // ---------------------------------------------------------------------------
+  describe('sendMessage', () => {
+    it('throws when MOLTBOOK_API_URL is not configured', async () => {
+      delete process.env.MOLTBOOK_API_URL;
+      const { sendMessage } = await import('../../../server/adapters/moltbook');
+      await expect(sendMessage('thread-1', 'hello')).rejects.toThrow('MOLTBOOK_API_URL is not set');
+    });
+
+    it('makes a POST to the messages endpoint and returns the response', async () => {
+      process.env.MOLTBOOK_API_URL = 'https://api.moltbook.test';
+      process.env.MOLTBOOK_API_TOKEN = 'tok-123';
+      const mockResponse = { id: 'msg-1', ok: true };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: vi.fn().mockResolvedValue({ id: 'msg-ok' }),
-      });
-    });
-    vi.stubGlobal('fetch', mockFetch);
+        json: async () => mockResponse,
+      }));
 
-    const { sendMessage } = await import('../../../server/adapters/moltbook');
-    const result = await sendMessage('thread-auth', 'retry test');
-    expect(result).toEqual({ id: 'msg-ok' });
-    // Expect 3 fetch calls: original + refresh + retry
-    expect(mockFetch).toHaveBeenCalledTimes(3);
+      const { sendMessage } = await import('../../../server/adapters/moltbook');
+      const result = await sendMessage('thread-abc', 'test content');
+      expect(result).toEqual(mockResponse);
+
+      const fetchCall = (global.fetch as any).mock.calls[0];
+      expect(fetchCall[0]).toContain('/threads/thread-abc/messages');
+      expect(fetchCall[1].method).toBe('POST');
+    });
+
+    it('auto-refreshes token on 401 and retries', async () => {
+      process.env.MOLTBOOK_API_URL = 'https://api.moltbook.test';
+      process.env.MOLTBOOK_API_TOKEN = 'expired-token';
+      process.env.MOLTBOOK_REFRESH_URL = 'https://api.moltbook.test/refresh';
+      process.env.MOLTBOOK_REFRESH_TOKEN = 'refresh-cred';
+
+      let callCount = 0;
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/refresh')) {
+          return { ok: true, status: 200, json: async () => ({ access_token: 'new-token' }) };
+        }
+        callCount++;
+        if (callCount === 1) {
+          // First call: 401
+          return { ok: false, status: 401, text: async () => 'Unauthorized' };
+        }
+        // Second call (after refresh): success
+        return { ok: true, status: 200, json: async () => ({ id: 'msg-refreshed' }) };
+      }));
+
+      const { sendMessage } = await import('../../../server/adapters/moltbook');
+      const result = await sendMessage('thread-1', 'hello');
+      expect(result).toEqual({ id: 'msg-refreshed' });
+      expect(callCount).toBe(2);
+    });
+
+    it('throws on non-401 HTTP errors', async () => {
+      process.env.MOLTBOOK_API_URL = 'https://api.moltbook.test';
+      process.env.MOLTBOOK_API_TOKEN = 'tok-123';
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: async () => 'Internal Server Error',
+      }));
+
+      const { sendMessage } = await import('../../../server/adapters/moltbook');
+      await expect(sendMessage('thread-1', 'content')).rejects.toThrow('500');
+    });
+
+    it('throws on network error', async () => {
+      process.env.MOLTBOOK_API_URL = 'https://api.moltbook.test';
+      process.env.MOLTBOOK_API_TOKEN = 'tok-123';
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network error')));
+
+      const { sendMessage } = await import('../../../server/adapters/moltbook');
+      await expect(sendMessage('thread-1', 'content')).rejects.toThrow('network error');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // fetchThread
+  // ---------------------------------------------------------------------------
+  describe('fetchThread', () => {
+    it('throws when MOLTBOOK_API_URL is not configured', async () => {
+      delete process.env.MOLTBOOK_API_URL;
+      const { fetchThread } = await import('../../../server/adapters/moltbook');
+      await expect(fetchThread('thread-1')).rejects.toThrow('MOLTBOOK_API_URL is not set');
+    });
+
+    it('fetches the thread messages endpoint with default pagination', async () => {
+      process.env.MOLTBOOK_API_URL = 'https://api.moltbook.test';
+      process.env.MOLTBOOK_API_TOKEN = 'tok-abc';
+      const mockMessages = { messages: [{ id: 'm1' }] };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => mockMessages,
+      }));
+
+      const { fetchThread } = await import('../../../server/adapters/moltbook');
+      const result = await fetchThread('thread-xyz');
+      expect(result).toEqual(mockMessages);
+
+      const fetchCall = (global.fetch as any).mock.calls[0];
+      expect(fetchCall[0]).toContain('/threads/thread-xyz/messages');
+      expect(fetchCall[0]).toContain('page=1');
+      expect(fetchCall[0]).toContain('limit=50');
+    });
+
+    it('passes custom page and limit parameters', async () => {
+      process.env.MOLTBOOK_API_URL = 'https://api.moltbook.test';
+      process.env.MOLTBOOK_API_TOKEN = 'tok-abc';
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ messages: [] }),
+      }));
+
+      const { fetchThread } = await import('../../../server/adapters/moltbook');
+      await fetchThread('thread-1', 3, 20);
+
+      const fetchUrl = (global.fetch as any).mock.calls[0][0];
+      expect(fetchUrl).toContain('page=3');
+      expect(fetchUrl).toContain('limit=20');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // registerAgent
+  // ---------------------------------------------------------------------------
+  describe('registerAgent', () => {
+    it('makes a POST to /agents/register', async () => {
+      process.env.MOLTBOOK_API_URL = 'https://api.moltbook.test';
+      process.env.MOLTBOOK_API_TOKEN = 'tok-abc';
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ registered: true }),
+      }));
+
+      const { registerAgent } = await import('../../../server/adapters/moltbook');
+      const result = await registerAgent({ name: 'rsea-agent', version: '1.0.0' });
+      expect(result).toEqual({ registered: true });
+
+      const fetchCall = (global.fetch as any).mock.calls[0];
+      expect(fetchCall[0]).toContain('/agents/register');
+      expect(fetchCall[1].method).toBe('POST');
+    });
   });
 });

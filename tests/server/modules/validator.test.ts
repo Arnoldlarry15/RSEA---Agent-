@@ -12,161 +12,177 @@ describe('ToolValidator', () => {
     validator = new ToolValidator();
   });
 
-  // ── Null / non-object actions ───────────────────────────────────────────
-
-  it('rejects null', () => {
-    const result = validator.validate(null);
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain('null');
-  });
-
-  it('rejects undefined', () => {
-    const result = validator.validate(undefined);
-    expect(result.valid).toBe(false);
-  });
-
-  it('rejects a plain string', () => {
-    const result = validator.validate('simulate');
-    expect(result.valid).toBe(false);
-  });
-
-  it('rejects a number', () => {
-    const result = validator.validate(42);
-    expect(result.valid).toBe(false);
-  });
-
-  // ── Missing / invalid tool field ────────────────────────────────────────
-
-  it('rejects an action with no tool field', () => {
-    const result = validator.validate({ payload: {} });
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain('tool');
-  });
-
-  it('rejects an action where tool is not a string', () => {
-    const result = validator.validate({ tool: 123, payload: {} });
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain('tool');
-  });
-
-  it('rejects an action where tool is an empty string', () => {
-    const result = validator.validate({ tool: '', payload: {} });
-    expect(result.valid).toBe(false);
-  });
-
-  // ── Unknown tool ────────────────────────────────────────────────────────
-
-  it('rejects a tool not in the whitelist', () => {
-    const result = validator.validate({ tool: 'rm_rf', payload: {} });
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain('whitelist');
-  });
-
-  // ── simulate (no required params) ───────────────────────────────────────
-
-  it('accepts a simulate action with any payload', () => {
-    const result = validator.validate({ tool: 'simulate', payload: { info: 'test' } });
-    expect(result.valid).toBe(true);
-  });
-
-  it('accepts a simulate action with an empty payload', () => {
-    const result = validator.validate({ tool: 'simulate', payload: {} });
-    expect(result.valid).toBe(true);
-  });
-
-  // ── api_fetch ────────────────────────────────────────────────────────────
-
-  it('accepts an api_fetch action with a url', () => {
-    const result = validator.validate({ tool: 'api_fetch', payload: { url: 'https://example.com' } });
-    expect(result.valid).toBe(true);
-  });
-
-  it('rejects api_fetch when url is missing', () => {
-    const result = validator.validate({ tool: 'api_fetch', payload: {} });
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain('url');
-  });
-
-  it('rejects api_fetch when url is null', () => {
-    const result = validator.validate({ tool: 'api_fetch', payload: { url: null } });
-    expect(result.valid).toBe(false);
-  });
-
-  it('rejects api_fetch when payload is absent', () => {
-    const result = validator.validate({ tool: 'api_fetch' });
-    expect(result.valid).toBe(false);
-  });
-
-  // ── code_eval ────────────────────────────────────────────────────────────
-
-  it('accepts a code_eval action with code', () => {
-    const result = validator.validate({ tool: 'code_eval', payload: { code: 'console.log(1)' } });
-    expect(result.valid).toBe(true);
-  });
-
-  it('rejects code_eval when code is missing', () => {
-    const result = validator.validate({ tool: 'code_eval', payload: {} });
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain('code');
-  });
-
-  // ── system_command ───────────────────────────────────────────────────────
-
-  it('accepts a system_command action with command', () => {
-    const result = validator.validate({ tool: 'system_command', payload: { command: 'echo hello' } });
-    expect(result.valid).toBe(true);
-  });
-
-  it('rejects system_command when command is missing', () => {
-    const result = validator.validate({ tool: 'system_command', payload: {} });
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain('command');
-  });
-
-  // ── moltbook_send_message ────────────────────────────────────────────────
-
-  it('accepts moltbook_send_message with threadId and content', () => {
-    const result = validator.validate({
-      tool: 'moltbook_send_message',
-      payload: { threadId: 't1', content: 'hello' },
+  // ---------------------------------------------------------------------------
+  // Null / non-object input
+  // ---------------------------------------------------------------------------
+  describe('null / non-object action', () => {
+    it('rejects null', () => {
+      const result = validator.validate(null);
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/null or not an object/i);
     });
-    expect(result.valid).toBe(true);
+
+    it('rejects undefined', () => {
+      const result = validator.validate(undefined);
+      expect(result.valid).toBe(false);
+    });
+
+    it('rejects a string', () => {
+      const result = validator.validate('bad');
+      expect(result.valid).toBe(false);
+    });
+
+    it('rejects a number', () => {
+      const result = validator.validate(42);
+      expect(result.valid).toBe(false);
+    });
   });
 
-  it('rejects moltbook_send_message when threadId is missing', () => {
-    const result = validator.validate({
-      tool: 'moltbook_send_message',
-      payload: { content: 'hello' },
+  // ---------------------------------------------------------------------------
+  // Missing / invalid tool field
+  // ---------------------------------------------------------------------------
+  describe('missing or invalid tool field', () => {
+    it('rejects an empty tool string', () => {
+      const result = validator.validate({ tool: '' });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/missing or invalid tool/i);
     });
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain('threadId');
+
+    it('rejects when tool field is a number', () => {
+      const result = validator.validate({ tool: 42 });
+      expect(result.valid).toBe(false);
+    });
+
+    it('rejects when tool field is missing entirely', () => {
+      const result = validator.validate({ payload: {} });
+      expect(result.valid).toBe(false);
+    });
   });
 
-  it('rejects moltbook_send_message when content is missing', () => {
-    const result = validator.validate({
-      tool: 'moltbook_send_message',
-      payload: { threadId: 't1' },
+  // ---------------------------------------------------------------------------
+  // Tool not in whitelist
+  // ---------------------------------------------------------------------------
+  describe('unlisted tool', () => {
+    it('rejects a tool not in the whitelist', () => {
+      const result = validator.validate({ tool: 'rm_rf_slash', payload: {} });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/whitelist/i);
     });
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain('content');
+
+    it('rejects an empty string as a tool name', () => {
+      const result = validator.validate({ tool: '   ' });
+      expect(result.valid).toBe(false);
+    });
   });
 
-  // ── moltbook_fetch_thread ────────────────────────────────────────────────
-
-  it('accepts moltbook_fetch_thread with threadId', () => {
-    const result = validator.validate({
-      tool: 'moltbook_fetch_thread',
-      payload: { threadId: 't1' },
+  // ---------------------------------------------------------------------------
+  // simulate — no required params
+  // ---------------------------------------------------------------------------
+  describe('simulate tool', () => {
+    it('passes without any payload', () => {
+      expect(validator.validate({ tool: 'simulate' }).valid).toBe(true);
     });
-    expect(result.valid).toBe(true);
+
+    it('passes with an arbitrary payload', () => {
+      expect(validator.validate({ tool: 'simulate', payload: { info: 'test' } }).valid).toBe(true);
+    });
   });
 
-  it('rejects moltbook_fetch_thread when threadId is missing', () => {
-    const result = validator.validate({
-      tool: 'moltbook_fetch_thread',
-      payload: {},
+  // ---------------------------------------------------------------------------
+  // api_fetch — requires payload.url
+  // ---------------------------------------------------------------------------
+  describe('api_fetch tool', () => {
+    it('passes when url is provided', () => {
+      expect(validator.validate({ tool: 'api_fetch', payload: { url: 'https://example.com' } }).valid).toBe(true);
     });
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain('threadId');
+
+    it('fails when url is missing', () => {
+      const result = validator.validate({ tool: 'api_fetch', payload: {} });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/url/i);
+    });
+
+    it('fails when url is null', () => {
+      const result = validator.validate({ tool: 'api_fetch', payload: { url: null } });
+      expect(result.valid).toBe(false);
+    });
+
+    it('fails when payload is absent', () => {
+      const result = validator.validate({ tool: 'api_fetch' });
+      expect(result.valid).toBe(false);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // code_eval — requires payload.code
+  // ---------------------------------------------------------------------------
+  describe('code_eval tool', () => {
+    it('passes when code is provided', () => {
+      expect(validator.validate({ tool: 'code_eval', payload: { code: 'console.log(1)' } }).valid).toBe(true);
+    });
+
+    it('fails when code is missing', () => {
+      const result = validator.validate({ tool: 'code_eval', payload: {} });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/code/i);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // system_command — requires payload.command
+  // ---------------------------------------------------------------------------
+  describe('system_command tool', () => {
+    it('passes when command is provided', () => {
+      expect(validator.validate({ tool: 'system_command', payload: { command: 'echo hi' } }).valid).toBe(true);
+    });
+
+    it('fails when command is missing', () => {
+      const result = validator.validate({ tool: 'system_command', payload: {} });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/command/i);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // moltbook_send_message — requires threadId and content
+  // ---------------------------------------------------------------------------
+  describe('moltbook_send_message tool', () => {
+    it('passes when both threadId and content are provided', () => {
+      const result = validator.validate({ tool: 'moltbook_send_message', payload: { threadId: 't1', content: 'hello' } });
+      expect(result.valid).toBe(true);
+    });
+
+    it('fails when threadId is missing', () => {
+      const result = validator.validate({ tool: 'moltbook_send_message', payload: { content: 'hello' } });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/threadId/i);
+    });
+
+    it('fails when content is missing', () => {
+      const result = validator.validate({ tool: 'moltbook_send_message', payload: { threadId: 't1' } });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/content/i);
+    });
+
+    it('fails when payload is absent', () => {
+      const result = validator.validate({ tool: 'moltbook_send_message' });
+      expect(result.valid).toBe(false);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // moltbook_fetch_thread — requires threadId
+  // ---------------------------------------------------------------------------
+  describe('moltbook_fetch_thread tool', () => {
+    it('passes when threadId is provided', () => {
+      const result = validator.validate({ tool: 'moltbook_fetch_thread', payload: { threadId: 't1' } });
+      expect(result.valid).toBe(true);
+    });
+
+    it('fails when threadId is missing', () => {
+      const result = validator.validate({ tool: 'moltbook_fetch_thread', payload: {} });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toMatch(/threadId/i);
+    });
   });
 });

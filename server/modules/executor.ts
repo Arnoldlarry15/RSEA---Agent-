@@ -1,44 +1,61 @@
 import vm from 'vm';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { createHash } from 'crypto';
 import { logEvent } from '../utils/logger';
+import { isSsrfTarget, isSsrfTargetAsync } from '../utils/ssrf';
 import { sendMessage as moltbookSend, fetchThread as moltbookFetch } from '../adapters/moltbook';
+import { ToolRegistry, createDefaultRegistry } from '../core/tools/index';
+import { RulesEngine } from '../core/rules';
 
-const execFileAsync = promisify(execFile);
+/**
+ * Deterministic RNG for the simulate tool.
+ * Derives a value in [0, 1) from a SHA-256 hash of the payload info string so
+ * that the same input always produces the same simulated outcome across runs.
+ * Exposed as an object so tests can spy on `getLuck` without patching Math.random.
+ */
+export const _simulateRng = {
+  getLuck(info: string): number {
+    const h = createHash('sha256').update(info ?? '').digest('hex').slice(0, 8);
+    return parseInt(h, 16) / 0xFFFFFFFF;
+  },
+};
 
-/** Hostnames / IP patterns that must never be reached by api_fetch (SSRF guard). */
-const IP_OCTET = '(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)';
-const PRIVATE_HOST_PATTERNS: RegExp[] = [
-  /^localhost$/i,
-  new RegExp(`^127\\.${IP_OCTET}\\.${IP_OCTET}\\.${IP_OCTET}$`),    // 127.0.0.0/8 loopback
-  /^0\.0\.0\.0$/,
-  /^::1$/,                                                              // IPv6 loopback
-  new RegExp(`^10\\.${IP_OCTET}\\.${IP_OCTET}\\.${IP_OCTET}$`),       // RFC-1918 10/8
-  new RegExp(`^172\\.(1[6-9]|2[0-9]|3[0-1])\\.${IP_OCTET}\\.${IP_OCTET}$`),  // RFC-1918 172.16/12
-  new RegExp(`^192\\.168\\.${IP_OCTET}\\.${IP_OCTET}$`),              // RFC-1918 192.168/16
-  new RegExp(`^169\\.254\\.${IP_OCTET}\\.${IP_OCTET}$`),              // Link-local / cloud metadata
-  /^fd[0-9a-f]{2}:/i,                                                  // IPv6 ULA fc00::/7
+/**
+ * Patterns that are commonly used to escape Node.js vm sandboxes.
+ * Code matching any of these patterns is rejected before execution as a
+ * defence-in-depth measure.  Note: vm.createContext is not a hard security
+ * boundary — this denylist reduces the attack surface but does not eliminate
+ * the risk of sandbox escapes.
+ */
+const SANDBOX_ESCAPE_PATTERNS: RegExp[] = [
+  /\bprocess\b/,
+  /\brequire\s*\(/,
+  /\b__proto__\b/,
+  /constructor\s*\[/,
+  /\beval\s*\(/,
+  /\bFunction\s*\(/,
+  /this\s*\.\s*constructor/,
+  /globalThis\b/,
+  /\bimportScripts\b/,
 ];
 
-/** Returns true when the URL targets a private/loopback address or uses a disallowed scheme. */
-function isSsrfTarget(rawUrl: string): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return true; // Malformed URL — block it
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return true; // Only HTTP(S) outbound requests are allowed
-  }
-  return PRIVATE_HOST_PATTERNS.some((p) => p.test(parsed.hostname));
-}
+const execFileAsync = promisify(execFile);
 
 /** Maximum number of characters accepted by the code_eval executor. */
 const MAX_CODE_SIZE = 10_000;
 
-/** When DRY_RUN=true the executor logs every action but skips actual execution. */
-const DRY_RUN = (process.env.DRY_RUN ?? '').toLowerCase() === 'true';
+/**
+ * Mainnet-Protocol gate: DRY_RUN defaults to true for safety.
+ * Operators must explicitly set DRY_RUN=false to enable live execution.
+ * Read dynamically so tests can override process.env.DRY_RUN at runtime.
+ */
+function isDryRun(): boolean {
+  return (process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false';
+}
+
+/** Safe argument pattern: alphanumeric, hyphens, dots, underscores, forward slashes, @, = */
+const SAFE_ARG_PATTERN = /^[a-zA-Z0-9\-._/@=:,]+$/;
 
 /** Outbound HTTP request timeout in milliseconds (default: 10 s). */
 const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS ?? '10000', 10);
@@ -91,28 +108,113 @@ async function fetchWithRetry(url: string, options: RequestInit = {}): Promise<R
   throw lastErr;
 }
 
+export interface ExecutionConstraints {
+  /** Override the global DRY_RUN setting for this batch of actions. */
+  dryRun?: boolean;
+  /** If provided, only tools in this list are permitted. */
+  allowedTools?: string[];
+  /** Per-request timeout override in milliseconds. */
+  timeout?: number;
+}
+
 export class Executor {
+  private registry: ToolRegistry;
+
+  constructor(registry?: ToolRegistry) {
+    this.registry = registry ?? createDefaultRegistry();
+  }
+
   /**
    * Executes tools, code, or APIs based on decision outputs.
+   * @param actions  Array of action objects produced by the planner/sniper.
+   * @param constraints  Optional runtime constraints (dryRun, allowedTools, timeout).
    */
-  async execute(actions: any[]) {
+  async execute(actions: any[], constraints?: ExecutionConstraints) {
     const results = [];
+    // Fresh RulesEngine per execute() call so the per-cycle counter starts at zero.
+    const ruleEngine = new RulesEngine();
     
     for (const action of actions) {
-      logEvent('executor_start', { action, dryRun: DRY_RUN });
+      const effectiveDryRun = constraints?.dryRun ?? isDryRun();
+      logEvent('executor_start', { action, dryRun: effectiveDryRun });
+
+      // ── RulesEngine hard-constraint gate ─────────────────────────────────────
+      const ruleValidation = ruleEngine.validate(action);
+      if (!ruleValidation.allowed) {
+        logEvent('executor_blocked', { reason: ruleValidation.reason, action });
+        results.push({
+          status: 'blocked',
+          timestamp: new Date().toISOString(),
+          action,
+          outcome: ruleValidation.reason,
+          priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD',
+          result: null,
+          success: false,
+          error: ruleValidation.reason,
+          side_effects: [],
+          confidence: 0,
+        });
+        continue;
+      }
+
+      // Constraints: optional tool allowlist
+      if (constraints?.allowedTools && !constraints.allowedTools.includes(action.tool)) {
+        logEvent('executor_blocked', { reason: 'Tool not in constraints.allowedTools', tool: action.tool });
+        results.push({
+          status: 'blocked',
+          timestamp: new Date().toISOString(),
+          action,
+          outcome: `Tool '${action.tool}' is not permitted by execution constraints`,
+          priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD',
+          result: null,
+          success: false,
+          error: `Tool '${action.tool}' is not permitted by execution constraints`,
+          side_effects: [],
+          confidence: 0,
+        });
+        continue;
+      }
 
       // In dry-run mode skip actual execution and return a simulated result
-      if (DRY_RUN) {
+      if (effectiveDryRun) {
         results.push({
           status: 'dry_run',
           timestamp: new Date().toISOString(),
           action,
           outcome: `DRY RUN — would have executed tool '${action.tool}'`,
           priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD',
+          result: null,
+          success: false,
+          error: null,
+          side_effects: [],
+          confidence: 0,
         });
         continue;
       }
 
+      // --- Dispatch to tool registry first ---
+      const registryTool = this.registry.get(action.tool);
+      if (registryTool) {
+        const toolResult = await registryTool.execute(action.payload ?? {});
+        logEvent('executor_result', { tool: action.tool, success: toolResult.success, error: toolResult.error });
+        results.push({
+          status: toolResult.success ? 'executed' : (toolResult.error?.includes('blocked') ? 'blocked' : 'failed'),
+          timestamp: new Date().toISOString(),
+          action,
+          outcome: toolResult.success
+            ? `Tool '${action.tool}' executed successfully`
+            : (toolResult.error ?? 'Unknown error'),
+          priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD',
+          result: toolResult.result,
+          success: toolResult.success,
+          error: toolResult.error,
+          side_effects: toolResult.side_effects,
+          confidence: toolResult.confidence,
+        });
+        continue;
+      }
+
+      // --- Legacy built-in tools ---
       let outcome = 'Success';
       let status = 'executed';
       
@@ -122,7 +224,7 @@ export class Executor {
             throw new Error("Missing URL for api_fetch tool");
           }
           const targetUrl: string = action.payload.url;
-          if (isSsrfTarget(targetUrl)) {
+          if (await isSsrfTargetAsync(targetUrl)) {
             logEvent('executor_blocked', { reason: 'SSRF target blocked', url: targetUrl });
             status = 'blocked';
             outcome = `Request to '${targetUrl}' was blocked (private/loopback/non-HTTP target)`;
@@ -143,18 +245,27 @@ export class Executor {
             }
           }
         } else if (action.tool === 'code_eval') {
-          // code_eval must be explicitly enabled — Node's vm.Script is NOT a full sandbox
-          // and can be escaped by a sufficiently crafted payload.
+          // SEC-3: code_eval must be explicitly opted-in via ALLOW_CODE_EVAL=true.
+          // Node.js vm.createContext is NOT a security boundary — sandbox escapes are possible.
           const allowCodeEval = (process.env.ALLOW_CODE_EVAL ?? '').toLowerCase() === 'true';
           if (!allowCodeEval) {
-            logEvent('executor_blocked', { reason: 'code_eval disabled (set ALLOW_CODE_EVAL=true to enable)', action });
+            logEvent('executor_blocked', { reason: 'code_eval is disabled; set ALLOW_CODE_EVAL=true to enable', action });
             status = 'blocked';
-            outcome = 'code_eval is disabled on this server. Set ALLOW_CODE_EVAL=true to enable.';
+            outcome = 'code_eval is disabled. Set ALLOW_CODE_EVAL=true to enable this tool (see security documentation).';
           } else {
           const code: string = action.payload?.code ?? '';
           if (code.length > MAX_CODE_SIZE) {
             throw new Error(`Code too large: ${code.length} chars (max ${MAX_CODE_SIZE})`);
           }
+          // SEC-10: Denylist common sandbox-escape patterns as a defence-in-depth
+          // measure.  vm.createContext is not a hard security boundary; this check
+          // reduces the attack surface without eliminating all risk.
+          const escapeMatch = SANDBOX_ESCAPE_PATTERNS.find((p) => p.test(code));
+          if (escapeMatch) {
+            logEvent('executor_blocked', { reason: 'code_eval: unsafe pattern detected', pattern: escapeMatch.toString(), action });
+            status = 'blocked';
+            outcome = `code_eval blocked: code contains a potentially unsafe pattern (${escapeMatch}).`;
+          } else {
           let capturedOutput = '';
           const sandbox = {
             console: {
@@ -167,6 +278,7 @@ export class Executor {
           const script = new vm.Script(code);
           script.runInNewContext(vm.createContext(sandbox), { timeout: 2000 });
           outcome = capturedOutput || '(no output)';
+          }
           }
         } else if (action.tool === 'system_command') {
           const rawCommand: string = action.payload?.command ?? '';
@@ -182,11 +294,20 @@ export class Executor {
             status = 'blocked';
             outcome = `Command '${cmd}' is not permitted (not in ALLOWED_COMMANDS allowlist)`;
           } else {
+            // SEC-9: Validate each argument against a safe pattern to prevent argument injection
+            const unsafeArgs = args.filter(a => !SAFE_ARG_PATTERN.test(a));
+            if (unsafeArgs.length > 0) {
+              logEvent('executor_blocked', { reason: 'unsafe argument pattern', unsafeArgs, command: cmd });
+              status = 'blocked';
+              outcome = `Command '${cmd}' was blocked: argument(s) contain unsafe characters`;
+            } else {
             const { stdout, stderr } = await execFileAsync(cmd, args);
             outcome = stdout || stderr || '(no output)';
+            }
           }
         } else if (action.tool === 'simulate') {
-          const luck = Math.random();
+          // G6: deterministic outcome derived from payload content via SHA-256 hash.
+          const luck = _simulateRng.getLuck(action.payload.info || '');
           if (luck > 0.95) outcome = `Anomaly: Collision detected for simulated task (${action.payload.info || ''}).`;
           else outcome = `Simulated Execution optimized successfully for: ${action.payload.info || ''}`;
           status = 'simulated';
@@ -222,7 +343,12 @@ export class Executor {
         timestamp: new Date().toISOString(),
         action,
         outcome,
-        priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD'
+        priority: action.action === 'priority_alert' ? 'CRITICAL' : 'STANDARD',
+        result: outcome,
+        success: status === 'executed' || status === 'simulated',
+        error: status === 'failed' ? outcome : null,
+        side_effects: [],
+        confidence: status === 'executed' || status === 'simulated' ? 1.0 : 0,
       });
     }
 

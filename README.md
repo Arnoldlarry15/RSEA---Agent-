@@ -1,6 +1,6 @@
 # RSEA Agent
 
-A modular, autonomous AI agent framework following the **Research, Scan, Execute, Act (RSEA)** architecture. The agent runs a persistent heartbeat loop, integrates a pluggable LLM cognition layer (Gemini, OpenAI, Anthropic, Grok, or Ollama), and operates in a safe simulation environment — all controlled through a React-based dashboard with real-time WebSocket log streaming.
+A modular, autonomous AI agent framework following the **Research, Scan, Execute, Act (RSEA)** architecture. The agent runs a persistent heartbeat loop, integrates multiple LLM providers, and operates in a safe simulation environment by default — all controlled through a React-based dashboard with real-time WebSocket log streaming.
 
 ## Architecture
 
@@ -8,11 +8,11 @@ The server is organized into the following layers:
 
 | Layer | Path | Description |
 |-------|------|-------------|
-| **Core** | `server/core/` | `Agent`, `AgentLoop`, `GoalManager`, `MemorySystem`, `Reflector`, `RulesEngine` |
-| **Cognition** | `server/cognition/` | `LLMInterface` — wraps Gemini, OpenAI, Anthropic, Grok, and Ollama |
+| **Core** | `server/core/` | `Agent`, `AgentLoop`, `GoalManager`, `MemorySystem`, `Reflector`, `RulesEngine`, `ToolRegistry` |
+| **Cognition** | `server/cognition/` | `LLMInterface` — wraps Gemini, OpenAI, Anthropic, Grok, and Ollama APIs |
 | **Modules** | `server/modules/` | `Controller`, `Evaluator`, `Executor`, `Planner`, `Sniper`, `Spotter`, `ToolValidator` |
-| **Adapters** | `server/adapters/` | `MoltbookAdapter` — Moltbook messaging platform integration |
-| **Utils** | `server/utils/` | `Logger` — file-backed log with rotation and real-time pub/sub |
+| **Utils** | `server/utils/` | `Logger` — file-backed log with rotation and real-time pub/sub; `SSRF` guard |
+| **Tools** | `server/core/tools/` | `BaseTool`, `ToolRegistry`, `HTTPTool`, `FileTool`, `FileWriteTool`, `WebhookTool` |
 
 Each agent cycle follows the RSEA pattern:
 1. **Observe** — Spotter gathers live market signals (BTC/USDT from Binance + simulated feeds)
@@ -20,26 +20,24 @@ Each agent cycle follows the RSEA pattern:
 3. **Evaluate** — Evaluator ranks tasks by risk, value density, and speed
 4. **Execute** — Sniper fires the top-ranked task through the Executor
 5. **Reflect** — Reflector persists insights to short-term and long-term (vector) memory
-6. **Self-Modify** — Controller periodically adjusts its own strategic prompt modifiers via LLM (requires `ALLOW_SELF_MODIFICATION=true`)
+6. **Self-Modify** — Controller periodically adjusts its own strategic prompt modifiers via LLM
 
-A `RulesEngine` threshold gates all actions before execution.
+Actions pass through a two-stage control system before execution:
+
+- **`RulesEngine.apply()`** — confidence-score gate: only tasks scoring above `CONFIDENCE_THRESHOLD` (default 60/100) proceed, further filtered by `DECISION_AGGRESSIVENESS`.
+- **`RulesEngine.validate()`** — hard constraint gate run by the Executor on every action: enforces `MAX_ACTIONS_PER_CYCLE`, `RULE_ALLOWED_TOOLS`, `RISK_THRESHOLD`, and `ACTION_TIMEOUT_MS`.
+- **`ToolValidator`** — zero-trust LLM output gate in the Sniper: checks tool whitelist and required payload parameters before forwarding to the Executor.
 
 ## Prerequisites
 
-- **Node.js** v18 or later
-- An LLM API key for one of the supported providers, **or** a running [Ollama](https://ollama.com) instance for local inference (no API key required).
-
-### Supported LLM Providers
-
-| Provider | Key env var | Notes |
-|----------|-------------|-------|
-| **Gemini** (Google) | `GEMINI_API_KEY` | `gemini-2.0-flash` for chat, `text-embedding-004` for embeddings |
-| **OpenAI** | `OPENAI_API_KEY` | `gpt-4o` by default; set `OPENAI_MODEL` to override |
-| **Anthropic** | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet-20241022` by default; set `ANTHROPIC_MODEL` to override |
-| **Grok** (xAI) | `XAI_API_KEY` | `grok-3` by default; set `GROK_MODEL` to override |
-| **Ollama** (local) | *(none)* | Set `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_EMBED_MODEL` |
-
-Set `LLM_PROVIDER` to the provider name to skip auto-detection. If no key is found the agent runs in **simulation mode** (no external calls; deterministic stubs returned).
+- **Node.js** (v18+)
+- One of the supported LLM providers:
+  - **Google Gemini** — set `GEMINI_API_KEY`
+  - **OpenAI** — set `OPENAI_API_KEY`
+  - **Anthropic** — set `ANTHROPIC_API_KEY`
+  - **Grok (xAI)** — set `XAI_API_KEY`
+  - **Ollama** (local) — run `ollama serve` and set `OLLAMA_BASE_URL`
+  - If no key is provided, the agent runs in **simulation mode**
 
 ## Getting Started
 
@@ -48,10 +46,10 @@ Set `LLM_PROVIDER` to the provider name to skip auto-detection. If no key is fou
    npm install
    ```
 
-2. Copy the example environment file and set your keys:
+2. Copy the example environment file and add your API key:
    ```bash
    cp .env.example .env.local
-   # Edit .env.local — set at least one LLM key and, for production, API_SECRET
+   # then edit .env.local and set your preferred LLM provider key
    ```
 
 3. Start the development server:
@@ -60,34 +58,55 @@ Set `LLM_PROVIDER` to the provider name to skip auto-detection. If no key is fou
    ```
    The app will be available at `http://localhost:3000`.
 
-## API Endpoints
+## DRY_RUN and the Mainnet Protocol
 
-All endpoints that return or accept sensitive data require `Authorization: Bearer <API_SECRET>` unless stated otherwise.
+By default, `DRY_RUN=true` — the executor logs every action but **skips actual execution**. This is the safe, simulation-only mode. To enable live execution (the **Mainnet Protocol**), operators must explicitly set `DRY_RUN=false` in their environment.
+
+## Configuration
+
+Key environment variables (see `.env.example` for the full list):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | auto-detect | LLM to use: `gemini`, `openai`, `anthropic`, `grok`, `ollama` |
+| `API_SECRET` | — | Bearer token for authenticated endpoints (required in production) |
+| `DRY_RUN` | `true` | Mainnet-Protocol gate — set to `false` to enable live execution |
+| `ALLOW_CODE_EVAL` | `false` | Enable sandboxed JavaScript execution via `code_eval` tool |
+| `ALLOW_SELF_MODIFICATION` | `false` | Allow the agent to modify its own prompt modifiers |
+| `CONFIDENCE_THRESHOLD` | `60` | Minimum RulesEngine score (0–100) required before executing an action |
+| `DECISION_AGGRESSIVENESS` | `0.5` | 0.0 = very conservative, 1.0 = act on any positive signal |
+| `VERBOSITY_LEVEL` | `normal` | `silent` \| `normal` \| `verbose` |
+| `CYCLE_TIMEOUT_MS` | `30000` | Max wall-clock time per agent cycle (ms) |
+| `MAX_ACTIONS_PER_CYCLE` | `10` | Hard cap on actions the RulesEngine will approve in one execution cycle |
+| `RISK_THRESHOLD` | `90` | Actions with a risk score above this value (0–100) are blocked by the RulesEngine |
+| `ACTION_TIMEOUT_MS` | `5000` | Maximum per-action timeout (ms) the RulesEngine will permit |
+| `RULE_ALLOWED_TOOLS` | — | Comma-separated tool allowlist enforced by the RulesEngine (empty = allow all) |
+| `SIGNAL_FEED_URL` | — | Optional URL for a custom signal feed (JSON array or object) |
+| `MOLTBOOK_API_URL` | — | Moltbook messaging platform base URL |
+| `MOLTBOOK_WEBHOOK_SECRET` | — | Required in production when `MOLTBOOK_API_URL` is set |
+
+## API Endpoints
 
 | Method | Route | Auth | Description |
 |--------|-------|------|-------------|
-| GET | `/ping` | None | Liveness probe — returns `"pong"` |
-| GET | `/api/status` | None | Framework version, uptime, goals, and config flags |
-| GET | `/api/health` | None | Health check for DB and LLM connections (200 = healthy, 503 = unhealthy) |
-| GET | `/api/logs` | **Required** | Last 100 agent log events; filter by `?traceId=` |
-| GET | `/api/memory` | **Required** | Full memory snapshot (short-term + long-term) |
-| GET | `/api/debug/state` | **Required** | Loop telemetry, goal state, and memory stats |
-| POST | `/api/command` | **Required** | Queue a manual instruction for the agent (body: `{ command: string }`) |
-| POST | `/api/control` | **Required** | Control the agent loop (see actions below) |
-| POST | `/api/webhooks/moltbook` | None* | Receive Moltbook platform events (`X-Moltbook-Secret` validated if `MOLTBOOK_WEBHOOK_SECRET` is set) |
-| WS | `/ws/logs` | **Required** | Real-time log stream — supply token via `?token=<API_SECRET>` or `Authorization: Bearer` upgrade header |
+| GET | `/api/status` | — | Framework version, uptime, and current goals |
+| GET | `/api/health` | — | Health check for DB and LLM connections |
+| GET | `/api/logs` | required | Last 100 agent log events (REST fallback) |
+| GET | `/api/memory` | required | Full memory snapshot (short-term + long-term) |
+| GET | `/api/debug/state` | required | Loop telemetry, goal state, memory stats, and config (dryRun, killSwitch) |
+| POST | `/api/command` | required | Queue a manual instruction for the agent (rate-limited: 20 req/min/IP) |
+| POST | `/api/control` | required | `start` / `stop` the loop, or `set_interval` (ms) |
+| WS | `/ws/logs` | required | Real-time log stream (sends `history` on connect, `log` on each new event) |
 
-*Protect the webhook URL at the network level or set `MOLTBOOK_WEBHOOK_SECRET`.
+## Security Notes
 
-### `POST /api/control` actions
-
-| `action` value | Effect |
-|----------------|--------|
-| `start` | Start the agent loop |
-| `stop` | Stop the agent loop |
-| `set_interval` | Change loop interval; supply `interval` (ms) in body |
-| `kill_switch_on` | Pause all agent cycles (emergency stop) |
-| `kill_switch_off` | Resume agent cycles |
+- **`ALLOW_CODE_EVAL=true`** enables sandboxed JavaScript execution using Node.js `vm`. Note that `vm.createContext` is **not a security boundary** — sandbox escapes are possible. Only enable this in trusted, isolated environments.
+- **SSRF protection** is enforced on all outbound HTTP requests (executor `api_fetch` and `http_request`, Spotter `SIGNAL_FEED_URL`). Requests to private/loopback addresses and non-HTTP(S) schemes are blocked.
+- **Rate limiting** on `POST /api/command`: max 20 requests per IP per minute.
+- All authenticated endpoints require `Authorization: Bearer <API_SECRET>`.
+- **Security response headers** (`X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`, `Content-Security-Policy`) are applied to every response.
+- **`ToolValidator`** zero-trust gate: every LLM-generated action is validated against a tool whitelist and required payload parameters before it reaches the Executor.
+- **`RulesEngine.validate()`** hard constraint gate: enforces cycle action limits, tool allowlists, risk thresholds, and timeout caps on every action in the Executor.
 
 ## Scripts
 
@@ -98,56 +117,8 @@ All endpoints that return or accept sensitive data require `Authorization: Beare
 | `npm run preview` | Preview the production build |
 | `npm run lint` | TypeScript type-check (no emit) |
 | `npm run test` | Run all tests |
-| `npm run test:coverage` | Run tests and enforce coverage thresholds |
-
-## Security Notes
-
-- **`API_SECRET`** — the server will exit immediately on startup if this is empty in `NODE_ENV=production`.
-- **`ALLOW_CODE_EVAL`** — `code_eval` tool is disabled by default. Node's `vm.Script` is not a full sandbox; only enable in isolated environments.
-- **`ALLOW_SELF_MODIFICATION`** — LLM-driven prompt modifier rewriting is disabled by default. Enable only under supervision.
-- **WebSocket auth** — supply the API secret via `?token=<secret>` or `Authorization: Bearer <secret>` on the WebSocket upgrade request.
-- **Webhook injection** — the webhook handler strips `override goal:` prefixes from incoming event content to prevent prompt injection.
-
-## Deployment
-
-### Docker (single container)
-
-```bash
-# Build
-docker build -t rsea-agent .
-
-# Run (requires API_SECRET and at least one LLM key)
-docker run -d \
-  -e NODE_ENV=production \
-  -e API_SECRET=your_secret \
-  -e GEMINI_API_KEY=your_key \
-  -v rsea-data:/app/data \
-  -p 3000:3000 \
-  rsea-agent
-```
-
-### Docker Compose
-
-```bash
-# Copy and fill in your secrets
-cp .env.example .env
-# Edit .env, then:
-docker compose up -d
-```
-
-The compose file mounts a named volume (`rsea-data`) for SQLite persistence and configures a health check on `/api/health`.
-
-### Cloud Run / Fly.io / Railway
-
-1. Build and push the image to a registry (e.g., GHCR).
-2. Set the required environment variables as platform secrets:
-   - `API_SECRET` (required)
-   - `LLM_PROVIDER` + the matching `*_API_KEY` (at least one)
-   - `APP_URL` (your service's public URL — used for Moltbook webhook registration)
-3. Mount a persistent volume at `/app/data` for SQLite.
-4. The container listens on `$PORT` (default 3000); Cloud Run injects this automatically.
+| `npm run test:coverage` | Run tests with coverage report |
 
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
-

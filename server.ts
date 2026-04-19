@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import express from 'express';
+import express, { Request } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { timingSafeEqual } from 'crypto';
@@ -8,8 +8,8 @@ import { createServer as createHttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { AgentLoop } from './server/core/loop';
 import { getLogs, subscribeToLogs, getLogsByTraceId } from './server/utils/logger';
-import { ingestWebhookEvent } from './server/adapters/moltbook';
-import { VERBOSITY, DECISION_AGGRESSIVENESS, CONFIDENCE_THRESHOLD } from './server/core/config';
+import { ingestWebhookEvent, registerAgent } from './server/adapters/moltbook';
+import { VERBOSITY, getDecisionAggressiveness, getConfidenceThreshold } from './server/core/config';
 
 // ── Production startup guard ─────────────────────────────────────────────────
 if (process.env.NODE_ENV === 'production' && !process.env.API_SECRET) {
@@ -22,9 +22,43 @@ async function startServer() {
   const httpServer = createHttpServer(app);
   const PORT = parseInt(process.env.PORT ?? '3000', 10);
 
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  // SEC-5: Fail fast in production when API_SECRET is not set
+  if (isProduction && !process.env.API_SECRET) {
+    console.error('[FATAL] API_SECRET is required in production. Set the API_SECRET environment variable and restart.');
+    process.exit(1);
+  }
+
+  // SEC-4: Fail fast in production when Moltbook is configured without webhook secret
+  if (isProduction && process.env.MOLTBOOK_API_URL && !process.env.MOLTBOOK_WEBHOOK_SECRET) {
+    console.error('[FATAL] MOLTBOOK_WEBHOOK_SECRET is required in production when MOLTBOOK_API_URL is set. Incoming Moltbook webhooks cannot be authenticated without it.');
+    process.exit(1);
+  }
+
   console.log(`[INIT] Starting RSEA Server in ${process.env.NODE_ENV || 'development'} mode`);
 
-  app.use(express.json());
+  // Trust the first proxy hop (e.g. nginx / Render / Railway) when explicitly opted in.
+  // Set TRUST_PROXY=1 (or a specific IP/CIDR) in production behind a reverse proxy.
+  const trustProxy = process.env.TRUST_PROXY;
+  if (trustProxy) {
+    app.set('trust proxy', isNaN(Number(trustProxy)) ? trustProxy : Number(trustProxy));
+  }
+
+  app.use(express.json({ limit: '100kb' }));
+
+  // SEC-8: Security response headers — applied to every response
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:"
+    );
+    next();
+  });
 
   // ── Security response headers ──────────────────────────────────────────────
   app.use((_req, res, next) => {
@@ -75,6 +109,28 @@ async function startServer() {
     next();
   });
 
+  // Simple in-memory rate limiter for POST /api/command and POST /api/control: max 20 requests per IP per minute
+  const commandRateLimitMap = new Map<string, { count: number; resetAt: number }>();
+  const COMMAND_RATE_LIMIT = 20;
+  const COMMAND_RATE_WINDOW_MS = 60_000;
+
+  function getClientIp(req: Request): string {
+    // req.ip respects the trust proxy setting; fall back to socket address if not set.
+    return req.ip || req.socket?.remoteAddress || 'unknown';
+  }
+
+  function isRateLimited(ip: string): boolean {
+    const now = Date.now();
+    const entry = commandRateLimitMap.get(ip);
+    if (!entry || now > entry.resetAt) {
+      commandRateLimitMap.set(ip, { count: 1, resetAt: now + COMMAND_RATE_WINDOW_MS });
+      return false;
+    }
+    if (entry.count >= COMMAND_RATE_LIMIT) return true;
+    entry.count++;
+    return false;
+  }
+
   // Initialize Agent
   const agentLoop = new AgentLoop();
 
@@ -88,16 +144,25 @@ async function startServer() {
         // Duplicate or invalid — acknowledge silently so the platform stops retrying
         return res.status(200).json({ acknowledged: true, processed: false });
       }
-      // Translate the webhook event into an agent instruction.
-      // Sanitize content to prevent external actors from injecting privileged
-      // commands via crafted webhook payloads (prompt injection). We strip
-      // goal-override patterns and common instruction-injection phrases.
+      // SEC-4: Sanitize webhook content — strip privileged command tokens before injecting
+      // into the agent instruction queue to prevent prompt-injection attacks.
+      // Covers common jailbreak / goal-hijack patterns targeting this agent's capabilities.
+      const INJECTION_PATTERNS: RegExp[] = [
+        /override\s+goal\s*:/gi,
+        /ignore\s+(all\s+)?(previous|prior|above|earlier)\s+instructions?/gi,
+        /forget\s+(your\s+)?(previous\s+)?instructions?/gi,
+        /new\s+(primary\s+)?goal\s*:/gi,
+        /you\s+are\s+now\s+(a|an)\s+/gi,
+        /\bsystem\s*:/gi,
+        /ALLOW_SELF_MODIFICATION/g,
+        /ALLOW_CODE_EVAL/g,
+        /DRY_RUN\s*=\s*false/gi,
+      ];
       const sanitizedContent = event.content
-        ? event.content
-            .replace(/override\s+goal\s*:/gi, '[goal-override-blocked]:')
-            .replace(/ignore\s+(previous|prior|above)\s+instructions?/gi, '[instruction-blocked]')
-            .replace(/system\s*prompt\s*:/gi, '[system-prompt-blocked]:')
-            .replace(/you\s+are\s+now\s+/gi, '[role-change-blocked] ')
+        ? INJECTION_PATTERNS.reduce(
+            (s, re) => s.replace(re, '[BLOCKED]'),
+            event.content
+          )
         : undefined;
       const instruction = sanitizedContent
         ? `moltbook_event(${event.type}): ${sanitizedContent}`
@@ -123,13 +188,6 @@ async function startServer() {
         version: '1.0.0',
         uptime: process.uptime(),
         goals: agentLoop.getAgent().getGoals().getGoals(),
-        config: {
-          verbosity: VERBOSITY,
-          decisionAggressiveness: DECISION_AGGRESSIVENESS,
-          confidenceThreshold: CONFIDENCE_THRESHOLD,
-          dryRun: (process.env.DRY_RUN ?? '').toLowerCase() === 'true',
-          killSwitch: agentLoop.isKillSwitchActive(),
-        }
       });
     } catch (err) {
       res.status(500).json({ error: 'Failed to generate status' });
@@ -178,6 +236,13 @@ async function startServer() {
           shortTermCount: agent.getMemory().getSnapshot().shortTerm.length,
           longTermCount: Object.keys(agent.getMemory().getSnapshot().longTerm).length
         },
+        config: {
+          verbosity: VERBOSITY,
+          decisionAggressiveness: getDecisionAggressiveness(),
+          confidenceThreshold: getConfidenceThreshold(),
+          dryRun: (process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false',
+          killSwitch: agentLoop.isKillSwitchActive(),
+        },
         nodeEnv: process.env.NODE_ENV || 'development'
       });
     } catch (err) {
@@ -187,6 +252,10 @@ async function startServer() {
 
   app.post('/api/command', requireAuth, (req, res) => {
     try {
+      const ip = getClientIp(req);
+      if (isRateLimited(ip)) {
+        return res.status(429).json({ error: 'Rate limit exceeded: max 20 requests per minute per IP' });
+      }
       const { command } = req.body;
       if (!command || typeof command !== 'string') {
         return res.status(400).json({ error: typeof command !== 'string' ? 'Command must be a string' : 'No command provided' });
@@ -204,6 +273,10 @@ async function startServer() {
 
   app.post('/api/control', requireAuth, (req, res) => {
     try {
+      const ip = getClientIp(req);
+      if (isRateLimited(ip)) {
+        return res.status(429).json({ error: 'Rate limit exceeded: max 20 requests per minute per IP' });
+      }
       const { action, interval } = req.body;
       if (action === 'start') {
         agentLoop.start();
@@ -232,24 +305,28 @@ async function startServer() {
     }
   });
 
-  // ── WebSocket server for real-time log streaming ─────────────────────────
+  // SEC-2: WebSocket server with bearer-token authentication
   const wss = new WebSocketServer({ server: httpServer, path: '/ws/logs' });
-  wss.on('connection', (ws, request) => {
-    // Authenticate WebSocket connections using the same API_SECRET.
-    // Clients supply the token via the `?token=` query parameter or
-    // an `Authorization: Bearer <secret>` upgrade header.
+  wss.on('connection', (ws, req) => {
+    // Validate token from ?token=<secret> query parameter or Authorization header
     const secret = process.env.API_SECRET;
     if (secret) {
-      const reqUrl = new URL(request.url ?? '/', 'http://localhost');
-      const queryToken = reqUrl.searchParams.get('token') ?? '';
-      const authHeader = (request.headers['authorization'] as string) ?? '';
-      const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-      const providedToken = queryToken || bearerToken;
-      if (providedToken !== secret) {
+      const rawUrl = req.url ?? '';
+      const qs = new URLSearchParams(rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?') + 1) : '');
+      const tokenParam = qs.get('token') ?? '';
+      const authHeader = (req.headers['authorization'] ?? '') as string;
+      const headerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const candidate = tokenParam || headerToken;
+      const secretBuf = Buffer.from(secret);
+      const candidateBuf = Buffer.from(candidate);
+      const authorized =
+        candidateBuf.length === secretBuf.length && timingSafeEqual(candidateBuf, secretBuf);
+      if (!authorized) {
         ws.close(1008, 'Unauthorized');
         return;
       }
     }
+
     // Send the last 100 logs on connect
     const initial = getLogs().slice(-100);
     ws.send(JSON.stringify({ type: 'history', logs: initial }));
@@ -284,22 +361,39 @@ async function startServer() {
     console.log(`RSEA Server running at http://localhost:${PORT}`);
     // Start agent after server is successfully listening
     agentLoop.start();
+    // Register this agent with Moltbook if the adapter is configured
+    if (process.env.MOLTBOOK_API_URL && process.env.MOLTBOOK_API_TOKEN) {
+      const agentMeta = {
+        name: 'RSEA Agent',
+        version: '1.0.0',
+        capabilities: ['autonomous_agent', 'market_analysis', 'task_execution', 'webhook_receiver'],
+        webhookUrl: process.env.APP_URL ? `${process.env.APP_URL}/api/webhooks/moltbook` : undefined,
+      };
+      registerAgent(agentMeta).catch((err: Error) => {
+        console.warn('[Moltbook] Agent registration failed (non-fatal):', err.message);
+      });
+    }
   });
 
-  // ── Graceful shutdown ────────────────────────────────────────────────────
+  // DEPLOY-4: Graceful shutdown — stop agent loop and drain connections before exiting
   const shutdown = (signal: string) => {
-    console.log(`[SHUTDOWN] ${signal} received — shutting down gracefully…`);
+    console.log(`[SHUTDOWN] Received ${signal} — shutting down gracefully`);
     agentLoop.stop();
-    wss.close();
-    httpServer.close(() => {
-      console.log('[SHUTDOWN] HTTP server closed.');
-      process.exit(0);
+    wss.close(() => {
+      httpServer.close(() => {
+        console.log('[SHUTDOWN] Server closed. Exiting.');
+        process.exit(0);
+      });
     });
-    // Force exit after 10 s if connections are still open
-    setTimeout(() => process.exit(0), 10_000).unref();
+    // Force exit after 10 s if clean shutdown stalls
+    setTimeout(() => {
+      console.error('[SHUTDOWN] Forced exit after timeout');
+      process.exit(1);
+    }, 10_000).unref();
   };
+
   process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT',  () => shutdown('SIGINT'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 startServer().catch(err => {

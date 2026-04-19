@@ -7,6 +7,10 @@ export class Reflector {
   private llm: LLMInterface;
   private memory: MemorySystem;
   private goals: GoalManager | null;
+  /** AUDIT-1: Deterministic reflection schedule — reflect every N cycles instead of
+   *  stochastically so execution is auditable and reproducible. */
+  private cycleCount: number = 0;
+  private static readonly REFLECT_EVERY_N_CYCLES = 3;
 
   constructor(llm: LLMInterface, memory: MemorySystem, goals: GoalManager | null = null) {
     this.llm = llm;
@@ -20,10 +24,14 @@ export class Reflector {
       return;
     }
 
-    // Determine if reflection is necessary (Anomalies, Critical priorities, or stochastic sample)
-    const requiresReflection = results.some((r: any) => r.priority === 'CRITICAL' || r.outcome.includes('Anomaly'));
-    if (!requiresReflection && Math.random() > 0.4) {
-      logEvent('reflect', { status: 'skipped', reason: 'low_priority_results' });
+    this.cycleCount++;
+
+    // Determine if reflection is necessary: always reflect on CRITICAL/Anomaly results,
+    // otherwise reflect on a deterministic schedule (every N cycles).
+    const requiresReflection = results.some((r: any) => r.priority === 'CRITICAL' || r.status === 'anomaly' || (typeof r.outcome === 'string' && r.outcome.includes('Anomaly')));
+    const scheduledReflection = (this.cycleCount % Reflector.REFLECT_EVERY_N_CYCLES) === 0;
+    if (!requiresReflection && !scheduledReflection) {
+      logEvent('reflect', { status: 'skipped', reason: 'low_priority_results', cycle: this.cycleCount });
       return; 
     }
 

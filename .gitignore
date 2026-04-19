@@ -7,3 +7,5 @@ coverage/
 .env*
 !.env.example
 data/
+data/logs.json
+data/memory.db
