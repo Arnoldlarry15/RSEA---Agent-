@@ -16,6 +16,8 @@
  *   FETCH_TIMEOUT_MS      – Per-request timeout in ms (default 10 000)
  */
 
+import fs from 'fs';
+import path from 'path';
 import { logEvent } from '../utils/logger';
 
 const BASE_URL = (process.env.MOLTBOOK_API_URL ?? '').replace(/\/$/, '');
@@ -133,10 +135,50 @@ export async function registerAgent(agentMeta: Record<string, any>): Promise<any
 
 // ── Webhook ingestion with idempotency ────────────────────────────────────────
 
+/**
+ * Persistent dedup store for webhook event IDs.
+ * In production (NODE_ENV !== 'test') the set is loaded from and saved to
+ * data/moltbook_dedup.json so duplicate suppression survives process restarts.
+ * In test environments the file is never read or written, keeping tests isolated.
+ */
+const DATA_DIR = path.join(process.cwd(), 'data');
+const DEDUP_FILE = path.join(DATA_DIR, 'moltbook_dedup.json');
+
+function loadPersistedIds(): Set<string> {
+  if (process.env.NODE_ENV === 'test') return new Set();
+  try {
+    if (fs.existsSync(DEDUP_FILE)) {
+      const arr = JSON.parse(fs.readFileSync(DEDUP_FILE, 'utf-8'));
+      return new Set(Array.isArray(arr) ? arr : []);
+    }
+  } catch {
+    // Ignore read errors — start with an empty set
+  }
+  return new Set();
+}
+
+function persistIds(ids: Set<string>): void {
+  if (process.env.NODE_ENV === 'test') return;
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(DEDUP_FILE, JSON.stringify([...ids]));
+  } catch (err) {
+    console.error('[moltbook] Failed to persist dedup IDs:', err);
+  }
+}
+
 /** Set of already-processed event IDs — prevents double-processing. */
-const processedEventIds = new Set<string>();
+const processedEventIds: Set<string> = loadPersistedIds();
 /** Cap the in-memory dedup set to avoid unbounded growth. */
 const MAX_PROCESSED_IDS = 10_000;
+
+/**
+ * Clear the in-memory dedup store.
+ * Exposed for testing purposes only — not intended for production use.
+ */
+export function _clearProcessedEventIds(): void {
+  processedEventIds.clear();
+}
 
 export interface MoltbookWebhookEvent {
   id: string;
@@ -192,6 +234,7 @@ export function ingestWebhookEvent(
     if (oldest !== undefined) processedEventIds.delete(oldest);
   }
   processedEventIds.add(event.id);
+  persistIds(processedEventIds);
 
   logEvent('moltbook_webhook_received', { eventId: event.id, type: event.type });
   return event;

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { AgentLoop } from '../../../server/core/loop';
+import { runtimeEvents } from '../../../server/core/runtime/events';
 
 vi.mock('../../../server/utils/logger', () => ({
   logEvent: vi.fn(),
@@ -119,6 +120,39 @@ describe('AgentLoop', () => {
       expect(t).toHaveProperty('cycleCount');
       expect(t).toHaveProperty('lastError');
       expect(t).toHaveProperty('lastExecutionTime');
+    });
+  });
+
+  // ── G4: RuntimeEventBus subscribers ────────────────────────────────────────
+
+  describe('G4: RuntimeEventBus event subscribers', () => {
+    it('logs new_input events without throwing', () => {
+      expect(() => {
+        runtimeEvents.emitNewInput({ instruction: 'test instruction', timestamp: new Date().toISOString() });
+      }).not.toThrow();
+    });
+
+    it('logs failure_spike events without throwing', () => {
+      expect(() => {
+        runtimeEvents.emitFailureSpike({ consecutiveFailures: 3, lastError: 'timeout' });
+      }).not.toThrow();
+    });
+
+    it('activates the kill switch on an extreme failure spike (≥6 consecutive failures)', () => {
+      expect(loop.isKillSwitchActive()).toBe(false);
+      runtimeEvents.emitFailureSpike({ consecutiveFailures: 6, lastError: 'repeated timeout' });
+      expect(loop.isKillSwitchActive()).toBe(true);
+    });
+
+    it('does not activate the kill switch for a moderate failure spike (<6 consecutive failures)', () => {
+      runtimeEvents.emitFailureSpike({ consecutiveFailures: 3, lastError: 'minor error' });
+      expect(loop.isKillSwitchActive()).toBe(false);
+    });
+
+    it('logs opportunity_detected events without throwing', () => {
+      expect(() => {
+        runtimeEvents.emitOpportunityDetected({ opportunityCount: 2, observations: [{}] });
+      }).not.toThrow();
     });
   });
 });

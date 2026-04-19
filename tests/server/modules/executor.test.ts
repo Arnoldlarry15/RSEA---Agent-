@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { Executor } from '../../../server/modules/executor';
+import { Executor, _simulateRng } from '../../../server/modules/executor';
 
 // Suppress logger output during tests
 vi.mock('../../../server/utils/logger', () => ({
@@ -33,7 +33,7 @@ describe('Executor', () => {
   // ---------------------------------------------------------------------------
   describe('simulate tool', () => {
     it('returns status "simulated" and a success outcome', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5); // Not > 0.95 → success
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5); // Not > 0.95 → success
       const results = await executor.execute([
         { action: 'strike', tool: 'simulate', payload: { info: 'test task' } }
       ]);
@@ -43,13 +43,24 @@ describe('Executor', () => {
       vi.restoreAllMocks();
     });
 
-    it('returns an Anomaly outcome when Math.random() > 0.95', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    it('returns an Anomaly outcome when luck > 0.95', async () => {
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.99);
       const results = await executor.execute([
         { action: 'strike', tool: 'simulate', payload: { info: 'anomaly task' } }
       ]);
       expect(results[0].outcome).toContain('Anomaly');
       vi.restoreAllMocks();
+    });
+
+    it('returns a deterministic outcome for the same payload info', async () => {
+      const results1 = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'deterministic-task-abc' } }
+      ]);
+      const results2 = await executor.execute([
+        { action: 'strike', tool: 'simulate', payload: { info: 'deterministic-task-abc' } }
+      ]);
+      expect(results1[0].outcome).toBe(results2[0].outcome);
+      expect(results1[0].status).toBe(results2[0].status);
     });
   });
 
@@ -220,6 +231,29 @@ describe('Executor', () => {
       expect(results[0].status).toBe('failed');
       expect(results[0].outcome).toContain('too large');
     });
+
+    it('blocks code that contains a sandbox-escape pattern (G7)', async () => {
+      for (const dangerousCode of [
+        'process.exit(1)',
+        'require("fs")',
+        'this.constructor["prototype"]',
+        'globalThis.x = 1',
+      ]) {
+        const results = await executor.execute([
+          { action: 'strike', tool: 'code_eval', payload: { code: dangerousCode } }
+        ]);
+        expect(results[0].status).toBe('blocked');
+        expect(results[0].outcome).toContain('blocked');
+      }
+    });
+
+    it('allows safe code that does not match any escape pattern', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'code_eval', payload: { code: 'console.log("safe code")' } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].outcome).toContain('safe code');
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -266,7 +300,7 @@ describe('Executor', () => {
   // ---------------------------------------------------------------------------
   describe('result shape', () => {
     it('marks priority "CRITICAL" for priority_alert actions', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const results = await executor.execute([
         { action: 'priority_alert', tool: 'simulate', payload: { info: '' } }
       ]);
@@ -275,7 +309,7 @@ describe('Executor', () => {
     });
 
     it('marks priority "STANDARD" for non-alert actions', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const results = await executor.execute([
         { action: 'surgical_strike', tool: 'simulate', payload: { info: '' } }
       ]);
@@ -284,7 +318,7 @@ describe('Executor', () => {
     });
 
     it('includes a timestamp on each result', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const results = await executor.execute([
         { action: 'strike', tool: 'simulate', payload: { info: '' } }
       ]);
@@ -293,7 +327,7 @@ describe('Executor', () => {
     });
 
     it('processes multiple actions and returns one result per action', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const results = await executor.execute([
         { action: 'strike', tool: 'simulate', payload: { info: 'a' } },
         { action: 'strike', tool: 'simulate', payload: { info: 'b' } },
@@ -367,7 +401,7 @@ describe('Executor', () => {
   // ---------------------------------------------------------------------------
   describe('extended result shape', () => {
     it('legacy tools include success, error, side_effects, confidence fields', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const results = await executor.execute([
         { action: 'strike', tool: 'simulate', payload: { info: 'x' } }
       ]);
@@ -413,7 +447,7 @@ describe('Executor', () => {
     });
 
     it('allows a tool present in constraints.allowedTools', async () => {
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const results = await executor.execute(
         [{ action: 'strike', tool: 'simulate', payload: { info: '' } }],
         { allowedTools: ['simulate'] }
@@ -515,7 +549,7 @@ describe('Executor', () => {
 
     it('allows an action whose risk is at or below RISK_THRESHOLD', async () => {
       process.env.RISK_THRESHOLD = '50';
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const results = await executor.execute([
         { action: 'strike', tool: 'simulate', payload: { info: 'safe' }, risk: 50 }
       ]);
@@ -525,7 +559,7 @@ describe('Executor', () => {
 
     it('blocks an action when the per-cycle action count is exhausted', async () => {
       process.env.MAX_ACTIONS_PER_CYCLE = '1';
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const results = await executor.execute([
         { action: 'strike', tool: 'simulate', payload: { info: 'first' } },
         { action: 'strike', tool: 'simulate', payload: { info: 'second' } },
@@ -538,7 +572,7 @@ describe('Executor', () => {
 
     it('resets the per-cycle counter between execute() calls', async () => {
       process.env.MAX_ACTIONS_PER_CYCLE = '1';
-      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      vi.spyOn(_simulateRng, 'getLuck').mockReturnValue(0.5);
       const first = await executor.execute([
         { action: 'strike', tool: 'simulate', payload: { info: 'a' } }
       ]);

@@ -1,15 +1,27 @@
 import { Agent } from './agent';
 import { newTraceId, setTraceId, logEvent } from '../utils/logger';
+import { RuntimeLoop } from './runtime/loop';
+import { runtimeEvents } from './runtime/events';
+import type { FailureSpikePayload, OpportunityDetectedPayload, NewInputPayload } from './runtime/events';
 
 /** Maximum wall-clock time (ms) a single agent cycle may run before being killed. */
 const CYCLE_TIMEOUT_MS = parseInt(process.env.CYCLE_TIMEOUT_MS ?? '30000', 10);
+
+/**
+ * Number of consecutive failures that trigger auto-activation of the kill switch.
+ * Set to 2× MAX_FAILURES_BEFORE_BACKOFF so mild turbulence only causes backoff
+ * while a sustained failure storm stops the loop entirely.
+ */
+const EXTREME_FAILURE_THRESHOLD = 6;
 
 export class AgentLoop {
   private agent: Agent;
   private isRunning: boolean = false;
   private interval: number = 10000;
-  private timer: NodeJS.Timeout | null = null;
   
+  /** Phase 6 RuntimeLoop instance used for the sleep between cycles. */
+  private runtimeLoop: RuntimeLoop = new RuntimeLoop();
+
   /** Per-cycle kill switch: set to true to halt the loop immediately on next step. */
   private killSwitch: boolean = false;
 
@@ -23,8 +35,50 @@ export class AgentLoop {
   private static readonly RECOVERY_INTERVAL_MS = 30000;
   private static readonly MAX_FAILURES_BEFORE_BACKOFF = 3;
 
+  /** Bound event listener references kept for cleanup in stop(). */
+  private _onNewInput: (p: NewInputPayload) => void;
+  private _onFailureSpike: (p: FailureSpikePayload) => void;
+  private _onOpportunityDetected: (p: OpportunityDetectedPayload) => void;
+
   constructor() {
     this.agent = new Agent();
+    this._onNewInput = (payload: NewInputPayload) => {
+      logEvent('loop_new_input_received', { timestamp: payload.timestamp });
+    };
+    this._onFailureSpike = (payload: FailureSpikePayload) => {
+      logEvent('loop_failure_spike_received', {
+        consecutiveFailures: payload.consecutiveFailures,
+        lastError: payload.lastError,
+      });
+      if (payload.consecutiveFailures >= EXTREME_FAILURE_THRESHOLD) {
+        this.activateKillSwitch();
+        logEvent('loop_kill_switch_auto_activated', {
+          reason: 'extreme_failure_spike',
+          consecutiveFailures: payload.consecutiveFailures,
+        });
+      }
+    };
+    this._onOpportunityDetected = (payload: OpportunityDetectedPayload) => {
+      logEvent('loop_opportunity_received', {
+        opportunityCount: payload.opportunityCount,
+        observations: payload.observations?.length ?? 0,
+      });
+    };
+    this._registerEventListeners();
+  }
+
+  /**
+   * Subscribes to all RuntimeEventBus events so they produce observable
+   * behaviour rather than being silently dropped.
+   *
+   *  - new_input:            logged for tracing purposes.
+   *  - failure_spike:        logged; auto-activates kill switch on extreme failures.
+   *  - opportunity_detected: logged for downstream monitoring / dashboards.
+   */
+  private _registerEventListeners(): void {
+    runtimeEvents.on('new_input', this._onNewInput);
+    runtimeEvents.on('failure_spike', this._onFailureSpike);
+    runtimeEvents.on('opportunity_detected', this._onOpportunityDetected);
   }
 
   async step() {
@@ -66,23 +120,31 @@ export class AgentLoop {
     if (this.isRunning) return;
     this.isRunning = true;
     console.log("Agent Heartbeat Started");
-    
-    const run = async () => {
-      if (!this.isRunning) return;
+    void this._runLoop();
+  }
+
+  /**
+   * Internal async loop that drives the agent.  Delegates the inter-cycle sleep
+   * to RuntimeLoop.sleep() so Phase 6 infrastructure is actually used.
+   * Fires-and-forgets from start() to keep start() synchronous.
+   */
+  private async _runLoop(): Promise<void> {
+    while (this.isRunning) {
       await this.step();
-      // Use a longer interval when the agent is in a failure backoff state
+      if (!this.isRunning) break;
       const nextInterval = this.consecutiveFailures >= AgentLoop.MAX_FAILURES_BEFORE_BACKOFF
         ? AgentLoop.RECOVERY_INTERVAL_MS
         : this.interval;
-      this.timer = setTimeout(run, nextInterval);
-    };
-    
-    run();
+      await this.runtimeLoop.sleep(nextInterval);
+    }
   }
 
   stop() {
     this.isRunning = false;
-    if (this.timer) clearTimeout(this.timer);
+    this.runtimeLoop.stop();
+    runtimeEvents.off('new_input', this._onNewInput);
+    runtimeEvents.off('failure_spike', this._onFailureSpike);
+    runtimeEvents.off('opportunity_detected', this._onOpportunityDetected);
     console.log("Agent Heartbeat Stopped");
   }
 

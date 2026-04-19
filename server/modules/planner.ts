@@ -27,27 +27,46 @@ export class Planner {
     this.retriever = retriever;
   }
 
-  async decomposeTask(objective: string, context: any[]): Promise<Plan> {
+  /**
+   * Decomposes an objective into a task tree.
+   *
+   * @param objective      The high-level goal to plan for.
+   * @param context        Contextual data (observations, modifiers, etc.) passed to the LLM.
+   * @param explorationRate  Value in [0, 1] from StrategyConfig.  Values ≥ 0.5 put the
+   *                         agent into exploration mode — fewer past memories are injected
+   *                         so the LLM generates novel plans.  Values < 0.5 use the full
+   *                         memory context to exploit known-good strategies.  Defaults to
+   *                         0.2 (exploitation-biased).
+   */
+  async decomposeTask(objective: string, context: any[], explorationRate: number = 0.2): Promise<Plan> {
     const fallbackPlan = (description: string): Plan => ({
       id: `plan_${Date.now()}`,
       objective,
       tasks: [{ id: 't1', description, status: 'pending' }]
     });
 
+    // Adjust how many past memories to inject based on exploration_rate.
+    // High exploration → fewer memories → agent generates novel plans.
+    // Low exploration  → more memories  → agent exploits known strategies.
+    const maxMemories = Math.max(0, Math.round((1 - explorationRate) * 10));
+
     // Inject retrieved memories (episodic, semantic, strategic) to influence planning.
     // Falls back to a simple recent-context slice when no retriever is wired in.
     let enrichedContext: any[];
     if (this.retriever) {
-      const memories = this.retriever.retrieve(objective, context);
+      const memories = maxMemories > 0
+        ? this.retriever.retrieve(objective, context).slice(0, maxMemories)
+        : [];
       enrichedContext = [
         ...context,
         ...(memories.length > 0 ? [{ type: 'memory_context', memories }] : [])
       ];
     } else {
       const recentMemory = this.memory.getRecentContext?.() ?? [];
+      const trimmedMemory = recentMemory.slice(0, Math.min(5, maxMemories));
       enrichedContext = [
         ...context,
-        ...(recentMemory.length > 0 ? [{ type: 'memory_context', events: recentMemory.slice(0, 5) }] : [])
+        ...(trimmedMemory.length > 0 ? [{ type: 'memory_context', events: trimmedMemory }] : [])
       ];
     }
 
