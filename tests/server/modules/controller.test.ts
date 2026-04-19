@@ -37,11 +37,16 @@ vi.mock('../../../server/modules/evaluator', () => {
   return { Evaluator };
 });
 
+// Use vi.hoisted so the shared fn is accessible both in the mock factory and in tests.
+const mockExecuteSurgicalStrike = vi.hoisted(() =>
+  vi.fn().mockResolvedValue([
+    { status: 'simulated', outcome: 'ok', priority: 'STANDARD', timestamp: '', action: {}, success: true }
+  ])
+);
+
 vi.mock('../../../server/modules/sniper', () => {
   class Sniper {
-    executeSurgicalStrike = vi.fn().mockResolvedValue([
-      { status: 'simulated', outcome: 'ok', priority: 'STANDARD', timestamp: '', action: {} }
-    ]);
+    executeSurgicalStrike = mockExecuteSurgicalStrike;
   }
   return { Sniper };
 });
@@ -115,12 +120,6 @@ describe('Controller', () => {
   describe('parallel task execution', () => {
     it('runs parallel tasks concurrently when multiple tasks are flagged parallelNode=true', async () => {
       const { Evaluator } = await import('../../../server/modules/evaluator');
-      const { Sniper } = await import('../../../server/modules/sniper');
-
-      const sniperInstance = new (Sniper as any)();
-      vi.mocked(sniperInstance.executeSurgicalStrike).mockResolvedValue([
-        { status: 'simulated', outcome: 'ok', priority: 'STANDARD', timestamp: '', action: {} }
-      ]);
 
       const evaluatorInstance = new (Evaluator as any)();
       vi.mocked(evaluatorInstance.rankStrategies).mockResolvedValue([
@@ -280,6 +279,50 @@ describe('Controller', () => {
       vi.mocked(s.scan).mockResolvedValue([]);
 
       await expect(controller.runAdversarialCycle('test objective')).resolves.toBeDefined();
+    });
+  });
+
+  // ── G1: Adversarial cycle wired into main loop ─────────────────────────────
+
+  describe('G1: adversarial cycle scheduling', () => {
+    it('fires runAdversarialCycle on the 20th cycle', async () => {
+      const spy = vi.spyOn(controller, 'runAdversarialCycle').mockResolvedValue({} as any);
+      // Run 19 cycles — adversarial should not have fired yet
+      for (let i = 0; i < 19; i++) await controller.runCycle('goal', []);
+      expect(spy).not.toHaveBeenCalled();
+      // 20th cycle — should fire
+      await controller.runCycle('goal', []);
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+    });
+
+    it('does not block runCycle when runAdversarialCycle rejects', async () => {
+      vi.spyOn(controller, 'runAdversarialCycle').mockRejectedValue(new Error('adversarial boom'));
+      // Advance to cycle 20 — even with an error the runCycle should resolve
+      for (let i = 0; i < 19; i++) await controller.runCycle('goal', []);
+      await expect(controller.runCycle('goal', [])).resolves.toBeDefined();
+    });
+  });
+
+  // ── G5: dry_run evaluation proxy scoring ──────────────────────────────────
+
+  describe('G5: dry_run evaluation proxy scoring', () => {
+    it('uses task.score as evaluation score when result.status is dry_run', async () => {
+      // Override the shared mock to return a dry_run result for this test.
+      mockExecuteSurgicalStrike.mockResolvedValueOnce([
+        { status: 'dry_run', outcome: 'DRY RUN', priority: 'STANDARD', timestamp: '', action: {} }
+      ]);
+      const c = new Controller(llm as any, memory as any);
+      const cycle = await c.runCycle('goal', []);
+      // The mock evaluator scores t1 at 75; the dry_run proxy should use that score.
+      expect(cycle.evaluations[0]?.evaluation.score).toBe(75);
+    });
+
+    it('uses comparator (score 0 or 100) when result is not dry_run', async () => {
+      // Default mock returns status:'simulated', success:true → state_change:true → score:100
+      const c = new Controller(llm as any, memory as any);
+      const cycle = await c.runCycle('goal', []);
+      expect([0, 100]).toContain(cycle.evaluations[0]?.evaluation.score);
     });
   });
 });

@@ -1,12 +1,13 @@
 import { BaseTool, ToolResult } from './base_tool';
-import { isSsrfTarget } from '../../utils/ssrf';
+import { isSsrfTargetAsync } from '../../utils/ssrf';
 
 /** Outbound webhook request timeout in milliseconds (default: 10 s). */
 const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS ?? '10000', 10);
 
 /**
  * Sends an outbound POST webhook signal to an external service.
- * Enforces SSRF protection and optional host allowlist via ALLOWED_FETCH_HOSTS.
+ * Enforces SSRF protection (including DNS-rebinding check) and optional host
+ * allowlist via ALLOWED_FETCH_HOSTS.
  */
 export class WebhookTool extends BaseTool {
   readonly name = 'webhook';
@@ -19,7 +20,7 @@ export class WebhookTool extends BaseTool {
       return { result: null, success: false, error: 'Missing required parameter: url', side_effects: [], confidence: 0 };
     }
 
-    if (isSsrfTarget(url)) {
+    if (await isSsrfTargetAsync(url)) {
       return { result: null, success: false, error: `Webhook to '${url}' was blocked (SSRF protection)`, side_effects: [], confidence: 0 };
     }
 

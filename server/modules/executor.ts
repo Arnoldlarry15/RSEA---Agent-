@@ -1,11 +1,44 @@
 import vm from 'vm';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { createHash } from 'crypto';
 import { logEvent } from '../utils/logger';
-import { isSsrfTarget } from '../utils/ssrf';
+import { isSsrfTarget, isSsrfTargetAsync } from '../utils/ssrf';
 import { sendMessage as moltbookSend, fetchThread as moltbookFetch } from '../adapters/moltbook';
 import { ToolRegistry, createDefaultRegistry } from '../core/tools/index';
 import { RulesEngine } from '../core/rules';
+
+/**
+ * Deterministic RNG for the simulate tool.
+ * Derives a value in [0, 1) from a SHA-256 hash of the payload info string so
+ * that the same input always produces the same simulated outcome across runs.
+ * Exposed as an object so tests can spy on `getLuck` without patching Math.random.
+ */
+export const _simulateRng = {
+  getLuck(info: string): number {
+    const h = createHash('sha256').update(info ?? '').digest('hex').slice(0, 8);
+    return parseInt(h, 16) / 0xFFFFFFFF;
+  },
+};
+
+/**
+ * Patterns that are commonly used to escape Node.js vm sandboxes.
+ * Code matching any of these patterns is rejected before execution as a
+ * defence-in-depth measure.  Note: vm.createContext is not a hard security
+ * boundary — this denylist reduces the attack surface but does not eliminate
+ * the risk of sandbox escapes.
+ */
+const SANDBOX_ESCAPE_PATTERNS: RegExp[] = [
+  /\bprocess\b/,
+  /\brequire\s*\(/,
+  /\b__proto__\b/,
+  /constructor\s*\[/,
+  /\beval\s*\(/,
+  /\bFunction\s*\(/,
+  /this\s*\.\s*constructor/,
+  /globalThis\b/,
+  /\bimportScripts\b/,
+];
 
 const execFileAsync = promisify(execFile);
 
@@ -191,7 +224,7 @@ export class Executor {
             throw new Error("Missing URL for api_fetch tool");
           }
           const targetUrl: string = action.payload.url;
-          if (isSsrfTarget(targetUrl)) {
+          if (await isSsrfTargetAsync(targetUrl)) {
             logEvent('executor_blocked', { reason: 'SSRF target blocked', url: targetUrl });
             status = 'blocked';
             outcome = `Request to '${targetUrl}' was blocked (private/loopback/non-HTTP target)`;
@@ -224,6 +257,15 @@ export class Executor {
           if (code.length > MAX_CODE_SIZE) {
             throw new Error(`Code too large: ${code.length} chars (max ${MAX_CODE_SIZE})`);
           }
+          // SEC-10: Denylist common sandbox-escape patterns as a defence-in-depth
+          // measure.  vm.createContext is not a hard security boundary; this check
+          // reduces the attack surface without eliminating all risk.
+          const escapeMatch = SANDBOX_ESCAPE_PATTERNS.find((p) => p.test(code));
+          if (escapeMatch) {
+            logEvent('executor_blocked', { reason: 'code_eval: unsafe pattern detected', pattern: escapeMatch.toString(), action });
+            status = 'blocked';
+            outcome = `code_eval blocked: code contains a potentially unsafe pattern (${escapeMatch}).`;
+          } else {
           let capturedOutput = '';
           const sandbox = {
             console: {
@@ -236,6 +278,7 @@ export class Executor {
           const script = new vm.Script(code);
           script.runInNewContext(vm.createContext(sandbox), { timeout: 2000 });
           outcome = capturedOutput || '(no output)';
+          }
           }
         } else if (action.tool === 'system_command') {
           const rawCommand: string = action.payload?.command ?? '';
@@ -263,7 +306,8 @@ export class Executor {
             }
           }
         } else if (action.tool === 'simulate') {
-          const luck = Math.random();
+          // G6: deterministic outcome derived from payload content via SHA-256 hash.
+          const luck = _simulateRng.getLuck(action.payload.info || '');
           if (luck > 0.95) outcome = `Anomaly: Collision detected for simulated task (${action.payload.info || ''}).`;
           else outcome = `Simulated Execution optimized successfully for: ${action.payload.info || ''}`;
           status = 'simulated';

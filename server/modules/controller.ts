@@ -50,6 +50,12 @@ export class Controller {
   private cycleCount: number = 0;
   private static readonly SELF_MODIFY_EVERY_N_CYCLES = 10;
 
+  /**
+   * Phase 7 adversarial cycle runs every N normal cycles to stress-test the
+   * current strategy.  Wired into runCycle() so it fires automatically.
+   */
+  private static readonly ADVERSARIAL_EVERY_N_CYCLES = 20;
+
   // ── Phase 5: Self-Evolution ──────────────────────────────────────────────
   private strategyConfig: StrategyConfig = defaultStrategyConfig();
   private readonly strategyVersioning: StrategyVersioning = new StrategyVersioning();
@@ -79,32 +85,42 @@ export class Controller {
     // Self-Modification trigger check based on recent performance
     await this.selfModifyPrompts(context);
 
-    // 2. Plan
-    const plan = await this.planner.decomposeTask(objective, [...observations, ...context, ...this.globalPromptModifiers]);
+    // 2. Plan — pass exploration_rate so the Planner adjusts memory injection depth.
+    const plan = await this.planner.decomposeTask(
+      objective,
+      [...observations, ...context, ...this.globalPromptModifiers],
+      this.strategyConfig.exploration_rate,
+    );
     logEvent('controller_plan', plan);
 
     // 3. Evaluate Strategies (we treat tasks as potential separate strategies here for parallel attempts)
     const rankedTasks = await this.evaluator.rankStrategies(objective, plan.tasks);
 
-    // 4. Act — run parallel tasks concurrently, single-fire for the rest
+    // 4. Act — run parallel tasks concurrently, single-fire for the rest.
+    //    Pass tool_preference so the Sniper can select the best-weighted tool when a
+    //    task does not specify one explicitly.
     const results = [];
     if (rankedTasks.length > 0) {
       const parallelTasks = rankedTasks.filter((t: any) => t.parallelNode === true);
       if (parallelTasks.length > 1) {
         // Execute all parallel-flagged top tasks concurrently
         const parallelResults = await Promise.all(
-          parallelTasks.map((t: any) => this.sniper.executeSurgicalStrike(t))
+          parallelTasks.map((t: any) => this.sniper.executeSurgicalStrike(t, this.strategyConfig.tool_preference))
         );
         for (const r of parallelResults) results.push(...r);
       } else {
         // Single-fire: execute only the top-ranked task
         const topTask = rankedTasks[0];
-        const strikeResult = await this.sniper.executeSurgicalStrike(topTask);
+        const strikeResult = await this.sniper.executeSurgicalStrike(topTask, this.strategyConfig.tool_preference);
         results.push(...strikeResult);
       }
     }
 
-    // 5. Observe & Compare — build the reality feedback loop
+    // 5. Observe & Compare — build the reality feedback loop.
+    //    G5: When the executor returns a dry_run result (DRY_RUN=true), execution
+    //    feedback is unavailable so the binary comparator always scores 0.  Instead,
+    //    use the evaluator's pre-execution task score as a proxy so that the
+    //    auto-rollback mechanism has meaningful signal even in dry-run mode.
     const evaluations = results.map((result: any, index: number) => {
       const task = rankedTasks[index];
       if (!task) {
@@ -113,7 +129,16 @@ export class Controller {
       }
       const expected = task.expected ?? task.description ?? 'NO_EXPECTED_OUTCOME';
       const observation = this.observer.observe(result);
-      const evaluation = this.comparator.compare(expected, observation);
+
+      const isDryRunResult = result?.status === 'dry_run';
+      const evaluation = isDryRunResult && typeof task.score === 'number'
+        ? {
+            success: false,
+            score: task.score,
+            delta: `DRY_RUN: using evaluator pre-execution score (${task.score}) as proxy`,
+          }
+        : this.comparator.compare(expected, observation);
+
       logEvent('controller_evaluation', { taskId: task.id, expected, observation, evaluation });
       return { taskId: task.id, expected, observation, evaluation };
     }).filter((ev): ev is NonNullable<typeof ev> => ev !== null);
@@ -137,6 +162,14 @@ export class Controller {
       .filter((s): s is number => s !== null);
     if (cycleScores.length > 0) {
       this.checkAndRollbackStrategy(cycleScores);
+    }
+
+    // 8. Phase 7: run the adversarial red-team cycle on schedule (every N cycles).
+    //    Errors are caught so a failing adversarial cycle never breaks a normal run.
+    if (this.cycleCount % Controller.ADVERSARIAL_EVERY_N_CYCLES === 0) {
+      this.runAdversarialCycle(objective).catch((err: Error) => {
+        logEvent('adversarial_cycle_error', { error: err.message, cycleCount: this.cycleCount });
+      });
     }
 
     return { observations, plan: rankedTasks, results, evaluations };
