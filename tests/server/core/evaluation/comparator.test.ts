@@ -38,4 +38,44 @@ describe('Comparator', () => {
     const comparison = comparator.compare({ goal: 'buy' }, failureObservation);
     expect(comparison.delta).toContain('"goal"');
   });
+
+  // ── Phase 8: confidence scoring ────────────────────────────────────────────
+
+  it('returns confidence=1.0 on success', () => {
+    const comparator = new Comparator();
+    const comparison = comparator.compare('task', successObservation);
+    expect(comparison.confidence).toBe(1.0);
+  });
+
+  it('returns confidence=1.0 for definitive error outcomes', () => {
+    const comparator = new Comparator();
+    const observation: Observation = { actual_outcome: 'Error: connection refused', state_change: false };
+    const comparison = comparator.compare('task', observation);
+    expect(comparison.confidence).toBe(1.0);
+    expect(comparison.score).toBe(0);
+  });
+
+  it('returns score=50 and confidence=0.6 for partial outcomes', () => {
+    const comparator = new Comparator();
+    const observation: Observation = { actual_outcome: 'partial completion — step 2 pending', state_change: false };
+    const comparison = comparator.compare('task', observation);
+    expect(comparison.score).toBe(50);
+    expect(comparison.confidence).toBe(0.6);
+  });
+
+  it('returns confidence=0.0 for dry-run outcomes', () => {
+    const comparator = new Comparator();
+    const observation: Observation = { actual_outcome: "DRY RUN — would have executed tool 'simulate'", state_change: false };
+    const comparison = comparator.compare('task', observation);
+    expect(comparison.confidence).toBe(0.0);
+    expect(comparison.score).toBe(0);
+  });
+
+  it('returns confidence=0.5 for unknown failure reasons', () => {
+    const comparator = new Comparator();
+    const observation: Observation = { actual_outcome: 'nothing happened', state_change: false };
+    const comparison = comparator.compare('task', observation);
+    expect(comparison.confidence).toBe(0.5);
+    expect(comparison.score).toBe(0);
+  });
 });

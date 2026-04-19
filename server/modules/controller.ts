@@ -7,6 +7,7 @@ import { MemorySystem } from '../core/memory';
 import { MemoryRetriever } from '../memory/retriever';
 import { Observer } from '../core/observation/observer';
 import { Comparator } from '../core/evaluation/comparator';
+import { OutcomeVerifier } from '../core/evaluation/verifier';
 import { logEvent } from '../utils/logger';
 import {
   StrategyConfig,
@@ -37,6 +38,7 @@ export class Controller {
   private sniper: Sniper;
   private observer: Observer;
   private comparator: Comparator;
+  private verifier: OutcomeVerifier;
   private llm: LLMInterface;
   private memory: MemorySystem;
 
@@ -71,6 +73,7 @@ export class Controller {
     this.sniper = new Sniper();
     this.observer = new Observer();
     this.comparator = new Comparator();
+    this.verifier = new OutcomeVerifier();
 
     // Commit the initial baseline so rollback always has a safe target.
     this.strategyVersioning.commit('initial baseline', 0, this.strategyConfig);
@@ -116,7 +119,11 @@ export class Controller {
       }
     }
 
-    // 5. Observe & Compare — build the reality feedback loop.
+    // 5. Observe, Verify & Compare — build the reality feedback loop.
+    //    Phase 8: OutcomeVerifier performs a secondary integrity check on every
+    //    result before the Comparator scores it, so that status/outcome
+    //    mismatches are flagged and stored in memory rather than silently trusted.
+    //
     //    G5: When the executor returns a dry_run result (DRY_RUN=true), execution
     //    feedback is unavailable so the binary comparator always scores 0.  Instead,
     //    use the evaluator's pre-execution task score as a proxy so that the
@@ -130,20 +137,34 @@ export class Controller {
       const expected = task.expected ?? task.description ?? 'NO_EXPECTED_OUTCOME';
       const observation = this.observer.observe(result);
 
+      // Phase 8: secondary integrity check — detect status/outcome mismatches.
+      const verification = this.verifier.verify(result);
+      if (!verification.verified) {
+        logEvent('controller_verification_failed', {
+          taskId: task.id,
+          flags: verification.flags,
+          verificationConfidence: verification.confidence,
+        });
+      }
+
       const isDryRunResult = result?.status === 'dry_run';
       const evaluation = isDryRunResult && typeof task.score === 'number'
         ? {
             success: false,
             score: task.score,
+            confidence: 0.0,
             delta: `DRY_RUN: using evaluator pre-execution score (${task.score}) as proxy`,
           }
         : this.comparator.compare(expected, observation);
 
-      logEvent('controller_evaluation', { taskId: task.id, expected, observation, evaluation });
-      return { taskId: task.id, expected, observation, evaluation };
+      logEvent('controller_evaluation', { taskId: task.id, expected, observation, evaluation, verification });
+      return { taskId: task.id, expected, observation, evaluation, verification };
     }).filter((ev): ev is NonNullable<typeof ev> => ev !== null);
 
-    // 6. Persist evaluations into memory so the agent learns from outcomes
+    // 6. Persist evaluations into memory so the agent learns from outcomes.
+    //    Phase 8: confidence and verification metadata are stored alongside
+    //    each evaluation so downstream memory retrieval can weight trustworthy
+    //    outcomes more heavily than unverified or low-confidence ones.
     for (const ev of evaluations) {
       this.memory.addEvent({
         type: 'evaluation',
@@ -153,6 +174,9 @@ export class Controller {
         success: ev.evaluation.success,
         score: ev.evaluation.score,
         delta: ev.evaluation.delta,
+        confidence: (ev.evaluation as any).confidence ?? null,
+        verified: ev.verification.verified,
+        verificationFlags: ev.verification.flags,
       });
     }
 
