@@ -66,16 +66,23 @@ export class Controller {
 
   /**
    * Self-Modification Layer
-   * Allows the agent to adjust its own system prompts and operating parameters
+   * Allows the agent to adjust its own system prompts and operating parameters.
+   * Requires ALLOW_SELF_MODIFICATION=true to be enabled — without this flag the
+   * method is a no-op, preventing unsupervised prompt drift in production.
    */
   async selfModifyPrompts(recentContext: any[]) {
-    if (!this.llm.healthCheck() || Math.random() > 0.1) return; // Only process periodically
+    const allowSelfMod = (process.env.ALLOW_SELF_MODIFICATION ?? '').toLowerCase() === 'true';
+    if (!allowSelfMod || !this.llm.healthCheck() || Math.random() > 0.1) return; // Only process periodically
 
     try {
       const updatedModifiers = await this.llm.generateModifiers(recentContext, this.globalPromptModifiers);
       if (updatedModifiers) {
+        logEvent('self_modification', {
+          severity: 'CRITICAL',
+          previous: [...this.globalPromptModifiers],
+          updated: updatedModifiers,
+        });
         this.globalPromptModifiers = updatedModifiers;
-        logEvent('self_modification', { updatedModifiers: this.globalPromptModifiers });
       }
     } catch (e) {
       console.error("Self-mod failed", e);

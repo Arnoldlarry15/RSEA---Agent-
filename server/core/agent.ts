@@ -33,7 +33,13 @@ export class Agent {
 
     const override = instructions.find(i => i.toLowerCase().includes('override goal:'));
     if (override) {
-      this.goals.overridePrimaryGoal(override.split('override goal:')[1].trim());
+      const newGoal = override.split('override goal:')[1].trim();
+      logEvent('goal_override', {
+        severity: 'CRITICAL',
+        newGoal,
+        previousGoal: this.goals.getGoals().primary,
+      });
+      this.goals.overridePrimaryGoal(newGoal);
     }
 
     // If the goal is already complete, skip execution

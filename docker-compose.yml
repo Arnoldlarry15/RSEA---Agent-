@@ -2,11 +2,13 @@ services:
   rsea-agent:
     build: .
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:${PORT:-3000}"
     environment:
       - NODE_ENV=production
       # Required in production — all authenticated endpoints reject requests without this
       - API_SECRET=${API_SECRET}
+      # Configurable listen port (default 3000)
+      - PORT=${PORT:-3000}
       # LLM provider selection (gemini | openai | anthropic | grok | ollama)
       - LLM_PROVIDER=${LLM_PROVIDER:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
@@ -20,9 +22,21 @@ services:
       - ALLOWED_FETCH_HOSTS=${ALLOWED_FETCH_HOSTS:-}
       # Optional: comma-separated allowlist of commands for system_command executor
       - ALLOWED_COMMANDS=${ALLOWED_COMMANDS:-}
+      # Set to "true" to enable the code_eval executor tool
+      - ALLOW_CODE_EVAL=${ALLOW_CODE_EVAL:-false}
+      # Set to "true" to allow the agent to rewrite its own strategic prompt modifiers
+      - ALLOW_SELF_MODIFICATION=${ALLOW_SELF_MODIFICATION:-false}
+      # APP_URL: public-facing URL (used for Moltbook webhook registration)
+      - APP_URL=${APP_URL:-}
     volumes:
       - rsea-data:/app/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:${PORT:-3000}/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   rsea-data:

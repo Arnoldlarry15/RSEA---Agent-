@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 // Import the logger statically — it writes to data/logs.json relative to cwd
-import { logEvent, getLogs, subscribeToLogs } from '../../../server/utils/logger';
+import { logEvent, getLogs, subscribeToLogs, getLogsByTraceId, setTraceId, newTraceId } from '../../../server/utils/logger';
 
 const LOG_FILE = path.join(process.cwd(), 'data', 'logs.json');
 
@@ -82,6 +82,36 @@ describe('Logger', () => {
     const last = logs[logs.length - 1];
     expect(() => new Date(last.time)).not.toThrow();
     expect(last.time).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  // ── getLogsByTraceId ──────────────────────────────────────────────────────
+
+  it('getLogsByTraceId returns only entries matching the given trace ID', () => {
+    setTraceId('trace-aaa');
+    logEvent('step_a', { x: 1 });
+    setTraceId('trace-bbb');
+    logEvent('step_b', { x: 2 });
+    setTraceId(undefined);
+
+    const aaa = getLogsByTraceId('trace-aaa');
+    expect(aaa.length).toBeGreaterThanOrEqual(1);
+    expect(aaa.every(e => e.traceId === 'trace-aaa')).toBe(true);
+    expect(aaa.some(e => e.stage === 'step_a')).toBe(true);
+  });
+
+  it('getLogsByTraceId returns an empty array when no entries match', () => {
+    logEvent('no_match_stage', {});
+    const result = getLogsByTraceId('trace-nonexistent-xyz');
+    expect(result).toEqual([]);
+  });
+
+  it('newTraceId generates a UUID and sets the active trace ID', () => {
+    const id = newTraceId();
+    expect(typeof id).toBe('string');
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    logEvent('trace_check', {});
+    const entries = getLogsByTraceId(id);
+    expect(entries.length).toBeGreaterThanOrEqual(1);
   });
 });
 

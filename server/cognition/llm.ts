@@ -302,11 +302,16 @@ Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.`;
   /**
    * Low-level JSON completion. Returns the raw parsed JSON from the LLM.
    * Falls back to null in simulation mode so callers can provide their own defaults.
+   * Raw response is logged at verbose level for auditability.
    */
   async complete(systemPrompt: string, userPrompt: string): Promise<any | null> {
     if (!this.provider) return null;
     try {
       const raw = await this.callChat(systemPrompt, userPrompt);
+      // Audit trail: log raw text before parsing so LLM output is always traceable
+      if ((process.env.VERBOSITY_LEVEL ?? 'normal').toLowerCase() === 'verbose') {
+        console.log(`[LLM][complete][${this.provider}] raw:`, raw.slice(0, 500));
+      }
       return JSON.parse(raw);
     } catch (err) {
       console.error(`[LLM] complete error (${this.provider}):`, err);
@@ -362,6 +367,7 @@ Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.`;
     }
 
     // Anthropic and Grok do not have public embedding APIs – use pseudo-vector
+    console.warn('[LLM] embed: provider does not support real embeddings; using pseudo-vector (semantic search will be unreliable)');
     return Array(768).fill(0).map(() => Math.random() - 0.5);
   }
 }

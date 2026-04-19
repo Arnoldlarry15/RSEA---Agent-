@@ -11,16 +11,38 @@ import { getLogs, subscribeToLogs, getLogsByTraceId } from './server/utils/logge
 import { ingestWebhookEvent } from './server/adapters/moltbook';
 import { VERBOSITY, DECISION_AGGRESSIVENESS, CONFIDENCE_THRESHOLD } from './server/core/config';
 
+// ── Production startup guard ─────────────────────────────────────────────────
+if (process.env.NODE_ENV === 'production' && !process.env.API_SECRET) {
+  console.error('[FATAL] API_SECRET must be set in production. Exiting.');
+  process.exit(1);
+}
+
 async function startServer() {
   const app = express();
   const httpServer = createHttpServer(app);
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT ?? '3000', 10);
 
   console.log(`[INIT] Starting RSEA Server in ${process.env.NODE_ENV || 'development'} mode`);
 
   app.use(express.json());
 
-  // Bearer token middleware for protected endpoints.
+  // ── Security response headers ──────────────────────────────────────────────
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    // CSP: allow same-origin scripts/styles (React SPA uses inline styles via Tailwind)
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+      "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+      "connect-src 'self' ws: wss:; font-src 'self';"
+    );
+    next();
+  });
+
+  // ── Bearer token middleware for protected endpoints ────────────────────────
   // In production API_SECRET must be set; requests are rejected if it is missing.
   const requireAuth = (req: any, res: any, next: any) => {
     const secret = process.env.API_SECRET;
@@ -63,9 +85,14 @@ async function startServer() {
         // Duplicate or invalid — acknowledge silently so the platform stops retrying
         return res.status(200).json({ acknowledged: true, processed: false });
       }
-      // Translate the webhook event into an agent instruction
-      const instruction = event.content
-        ? `moltbook_event(${event.type}): ${event.content}`
+      // Translate the webhook event into an agent instruction.
+      // Strip 'override goal:' prefix to prevent external actors from hijacking
+      // the agent's primary goal via crafted webhook payloads (prompt injection).
+      const sanitizedContent = event.content
+        ? event.content.replace(/override\s+goal\s*:/gi, '[goal-override-blocked]:')
+        : undefined;
+      const instruction = sanitizedContent
+        ? `moltbook_event(${event.type}): ${sanitizedContent}`
         : `moltbook_event(${event.type}): ${JSON.stringify(event)}`;
       agentLoop.getAgent().addInstruction(instruction);
       res.status(200).json({ acknowledged: true, processed: true, eventId: event.id });
@@ -110,7 +137,7 @@ async function startServer() {
     }
   });
 
-  app.get('/api/logs', (req, res) => {
+  app.get('/api/logs', requireAuth, (req, res) => {
     try {
       const { traceId } = req.query;
       if (traceId && typeof traceId === 'string') {
@@ -197,9 +224,24 @@ async function startServer() {
     }
   });
 
-  // WebSocket server for real-time log streaming
+  // ── WebSocket server for real-time log streaming ─────────────────────────
   const wss = new WebSocketServer({ server: httpServer, path: '/ws/logs' });
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, request) => {
+    // Authenticate WebSocket connections using the same API_SECRET.
+    // Clients supply the token via the `?token=` query parameter or
+    // an `Authorization: Bearer <secret>` upgrade header.
+    const secret = process.env.API_SECRET;
+    if (secret) {
+      const reqUrl = new URL(request.url ?? '/', 'http://localhost');
+      const queryToken = reqUrl.searchParams.get('token') ?? '';
+      const authHeader = (request.headers['authorization'] as string) ?? '';
+      const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const providedToken = queryToken || bearerToken;
+      if (providedToken !== secret) {
+        ws.close(1008, 'Unauthorized');
+        return;
+      }
+    }
     // Send the last 100 logs on connect
     const initial = getLogs().slice(-100);
     ws.send(JSON.stringify({ type: 'history', logs: initial }));
@@ -235,6 +277,21 @@ async function startServer() {
     // Start agent after server is successfully listening
     agentLoop.start();
   });
+
+  // ── Graceful shutdown ────────────────────────────────────────────────────
+  const shutdown = (signal: string) => {
+    console.log(`[SHUTDOWN] ${signal} received — shutting down gracefully…`);
+    agentLoop.stop();
+    wss.close();
+    httpServer.close(() => {
+      console.log('[SHUTDOWN] HTTP server closed.');
+      process.exit(0);
+    });
+    // Force exit after 10 s if connections are still open
+    setTimeout(() => process.exit(0), 10_000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT',  () => shutdown('SIGINT'));
 }
 
 startServer().catch(err => {

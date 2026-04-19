@@ -31,4 +31,12 @@ USER rsea
 
 ENV NODE_ENV=production
 EXPOSE 3000
+
+# Declare the data volume so orchestrators know it must be mounted persistently
+VOLUME ["/app/data"]
+
+# Health check using the /api/health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- http://localhost:3000/api/health || exit 1
+
 CMD ["npx", "tsx", "server.ts"]

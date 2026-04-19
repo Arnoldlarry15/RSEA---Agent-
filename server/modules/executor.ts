@@ -143,6 +143,14 @@ export class Executor {
             }
           }
         } else if (action.tool === 'code_eval') {
+          // code_eval must be explicitly enabled — Node's vm.Script is NOT a full sandbox
+          // and can be escaped by a sufficiently crafted payload.
+          const allowCodeEval = (process.env.ALLOW_CODE_EVAL ?? '').toLowerCase() === 'true';
+          if (!allowCodeEval) {
+            logEvent('executor_blocked', { reason: 'code_eval disabled (set ALLOW_CODE_EVAL=true to enable)', action });
+            status = 'blocked';
+            outcome = 'code_eval is disabled on this server. Set ALLOW_CODE_EVAL=true to enable.';
+          } else {
           const code: string = action.payload?.code ?? '';
           if (code.length > MAX_CODE_SIZE) {
             throw new Error(`Code too large: ${code.length} chars (max ${MAX_CODE_SIZE})`);
@@ -159,6 +167,7 @@ export class Executor {
           const script = new vm.Script(code);
           script.runInNewContext(vm.createContext(sandbox), { timeout: 2000 });
           outcome = capturedOutput || '(no output)';
+          }
         } else if (action.tool === 'system_command') {
           const rawCommand: string = action.payload?.command ?? '';
           const parts = rawCommand.trim().split(/\s+/);

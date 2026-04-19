@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Controller } from '../../../server/modules/controller';
 import type { LLMInterface } from '../../../server/cognition/llm';
 import type { MemorySystem } from '../../../server/core/memory';
@@ -121,6 +121,15 @@ describe('Controller', () => {
   });
 
   describe('selfModifyPrompts', () => {
+    beforeEach(() => {
+      // self-modification requires explicit opt-in
+      process.env.ALLOW_SELF_MODIFICATION = 'true';
+    });
+
+    afterEach(() => {
+      delete process.env.ALLOW_SELF_MODIFICATION;
+    });
+
     it('calls generateModifiers when LLM is healthy and random < 0.1', async () => {
       vi.spyOn(Math, 'random').mockReturnValue(0.05);
       await controller.selfModifyPrompts([{ ctx: 1 }]);
@@ -138,6 +147,14 @@ describe('Controller', () => {
     it('does not call generateModifiers when LLM is unhealthy', async () => {
       vi.spyOn(Math, 'random').mockReturnValue(0.05);
       (llm.healthCheck as any).mockReturnValue(false);
+      await controller.selfModifyPrompts([]);
+      expect(llm.generateModifiers).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
+    });
+
+    it('does not call generateModifiers when ALLOW_SELF_MODIFICATION is not set', async () => {
+      delete process.env.ALLOW_SELF_MODIFICATION;
+      vi.spyOn(Math, 'random').mockReturnValue(0.05);
       await controller.selfModifyPrompts([]);
       expect(llm.generateModifiers).not.toHaveBeenCalled();
       vi.restoreAllMocks();
