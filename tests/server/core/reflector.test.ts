@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Reflector } from '../../../server/core/reflector';
 import type { LLMInterface } from '../../../server/cognition/llm';
 import type { MemorySystem } from '../../../server/core/memory';
+import type { StrategyConfig } from '../../../server/core/strategy/config';
 
 vi.mock('../../../server/utils/logger', () => ({
   logEvent: vi.fn(),
@@ -142,6 +143,146 @@ describe('Reflector', () => {
 
       expect(result).toBeNull();
       expect(memory.remember).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Phase 8: Reflection Authority ──────────────────────────────────────────
+
+  describe('strategy authority', () => {
+    const defaultStrategy: StrategyConfig = {
+      exploration_rate: 0.2,
+      risk_tolerance: 0.5,
+      tool_preference: {},
+    };
+
+    function makeEvaluationsWithAvgScore(score: number) {
+      return [{ evaluation: { score, success: score > 0 } }];
+    }
+
+    it('does not fire onStrategyUpdate when no callbacks are provided', async () => {
+      const llm = makeMockLLM({ insight: 'insight' });
+      const memory = makeMockMemory();
+      const reflector = new Reflector(llm as any, memory as any);
+
+      const poorEvals = makeEvaluationsWithAvgScore(10);
+      // Two cycles of poor performance — should be a no-op without callbacks
+      await reflector.reflect([], [], [], [{ priority: 'CRITICAL', outcome: 'ok', status: 'executed' }], poorEvals);
+      await reflector.reflect([], [], [], [{ priority: 'CRITICAL', outcome: 'ok', status: 'executed' }], poorEvals);
+      // No assertion needed; just ensure no error is thrown
+    });
+
+    it('fires onStrategyUpdate to penalise after 2 consecutive poor cycles', async () => {
+      const llm = makeMockLLM({ insight: 'insight' });
+      const memory = makeMockMemory();
+      const onStrategyUpdate = vi.fn();
+      const getStrategy = vi.fn().mockReturnValue({ ...defaultStrategy });
+      const reflector = new Reflector(llm as any, memory as any, null, onStrategyUpdate, getStrategy);
+
+      const poorEvals = makeEvaluationsWithAvgScore(10); // below threshold (30)
+      const criticalResult = [{ priority: 'CRITICAL', outcome: 'bad', status: 'executed' }];
+
+      // Cycle 1: streak starts
+      await reflector.reflect([], [], [], criticalResult, poorEvals);
+      expect(onStrategyUpdate).not.toHaveBeenCalled();
+
+      // Cycle 2: streak reaches threshold → penalise
+      await reflector.reflect([], [], [], criticalResult, poorEvals);
+      expect(onStrategyUpdate).toHaveBeenCalledTimes(1);
+      const [updates, change, impact] = onStrategyUpdate.mock.calls[0];
+      expect(updates.risk_tolerance).toBeLessThan(defaultStrategy.risk_tolerance);
+      expect(change).toContain('poor performance');
+      expect(impact).toBeLessThan(0);
+    });
+
+    it('resets failure streak after penalising', async () => {
+      const llm = makeMockLLM({ insight: 'insight' });
+      const memory = makeMockMemory();
+      const onStrategyUpdate = vi.fn();
+      const getStrategy = vi.fn().mockReturnValue({ ...defaultStrategy });
+      const reflector = new Reflector(llm as any, memory as any, null, onStrategyUpdate, getStrategy);
+
+      const poorEvals = makeEvaluationsWithAvgScore(10);
+      const criticalResult = [{ priority: 'CRITICAL', outcome: 'bad', status: 'executed' }];
+
+      // Trigger first penalisation
+      await reflector.reflect([], [], [], criticalResult, poorEvals);
+      await reflector.reflect([], [], [], criticalResult, poorEvals);
+      expect(onStrategyUpdate).toHaveBeenCalledTimes(1);
+
+      // Third cycle — streak was reset; should NOT fire again immediately
+      await reflector.reflect([], [], [], criticalResult, poorEvals);
+      expect(onStrategyUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it('fires onStrategyUpdate to reward after 2 consecutive strong cycles', async () => {
+      const llm = makeMockLLM({ insight: 'insight' });
+      const memory = makeMockMemory();
+      const onStrategyUpdate = vi.fn();
+      const getStrategy = vi.fn().mockReturnValue({ ...defaultStrategy });
+      const reflector = new Reflector(llm as any, memory as any, null, onStrategyUpdate, getStrategy);
+
+      const strongEvals = makeEvaluationsWithAvgScore(90); // above threshold (70)
+      const criticalResult = [{ priority: 'CRITICAL', outcome: 'great', status: 'executed' }];
+
+      await reflector.reflect([], [], [], criticalResult, strongEvals);
+      expect(onStrategyUpdate).not.toHaveBeenCalled();
+
+      await reflector.reflect([], [], [], criticalResult, strongEvals);
+      expect(onStrategyUpdate).toHaveBeenCalledTimes(1);
+      const [updates, change, impact] = onStrategyUpdate.mock.calls[0];
+      expect(updates.exploration_rate).toBeGreaterThan(defaultStrategy.exploration_rate);
+      expect(change).toContain('strong performance');
+      expect(impact).toBeGreaterThan(0);
+    });
+
+    it('does not fire onStrategyUpdate for neutral scores (between 30 and 70)', async () => {
+      const llm = makeMockLLM({ insight: 'insight' });
+      const memory = makeMockMemory();
+      const onStrategyUpdate = vi.fn();
+      const getStrategy = vi.fn().mockReturnValue({ ...defaultStrategy });
+      const reflector = new Reflector(llm as any, memory as any, null, onStrategyUpdate, getStrategy);
+
+      const neutralEvals = makeEvaluationsWithAvgScore(50);
+      const criticalResult = [{ priority: 'CRITICAL', outcome: 'ok', status: 'executed' }];
+
+      for (let i = 0; i < 5; i++) {
+        await reflector.reflect([], [], [], criticalResult, neutralEvals);
+      }
+      expect(onStrategyUpdate).not.toHaveBeenCalled();
+    });
+
+    it('clamps risk_tolerance to 0.1 minimum when penalising', async () => {
+      const llm = makeMockLLM({ insight: 'insight' });
+      const memory = makeMockMemory();
+      const onStrategyUpdate = vi.fn();
+      const getStrategy = vi.fn().mockReturnValue({ ...defaultStrategy, risk_tolerance: 0.05 });
+      const reflector = new Reflector(llm as any, memory as any, null, onStrategyUpdate, getStrategy);
+
+      const poorEvals = makeEvaluationsWithAvgScore(10);
+      const criticalResult = [{ priority: 'CRITICAL', outcome: 'bad', status: 'executed' }];
+
+      await reflector.reflect([], [], [], criticalResult, poorEvals);
+      await reflector.reflect([], [], [], criticalResult, poorEvals);
+
+      const [updates] = onStrategyUpdate.mock.calls[0];
+      expect(updates.risk_tolerance).toBeGreaterThanOrEqual(0.1);
+    });
+
+    it('clamps exploration_rate to 1.0 maximum when rewarding', async () => {
+      const llm = makeMockLLM({ insight: 'insight' });
+      const memory = makeMockMemory();
+      const onStrategyUpdate = vi.fn();
+      const getStrategy = vi.fn().mockReturnValue({ ...defaultStrategy, exploration_rate: 0.99 });
+      const reflector = new Reflector(llm as any, memory as any, null, onStrategyUpdate, getStrategy);
+
+      const strongEvals = makeEvaluationsWithAvgScore(90);
+      const criticalResult = [{ priority: 'CRITICAL', outcome: 'great', status: 'executed' }];
+
+      await reflector.reflect([], [], [], criticalResult, strongEvals);
+      await reflector.reflect([], [], [], criticalResult, strongEvals);
+
+      const [updates] = onStrategyUpdate.mock.calls[0];
+      expect(updates.exploration_rate).toBeLessThanOrEqual(1.0);
     });
   });
 });

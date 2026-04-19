@@ -59,8 +59,17 @@ export class Agent {
     // Background pattern extractor
     this.patternExtractor = new PatternExtractor(this.episodic, this.semantic, this.strategic);
 
-    this.reflector = new Reflector(this.llm, this.memory, this.goals);
     this.controller = new Controller(this.llm, this.memory, this.retriever);
+
+    // Reflector is wired after the Controller so the strategy callbacks
+    // reference a fully-initialised controller instance.
+    this.reflector = new Reflector(
+      this.llm,
+      this.memory,
+      this.goals,
+      (updates, change, impact) => this.controller.updateStrategy(updates, change, impact),
+      () => this.controller.getStrategy(),
+    );
 
     // Initialise persistence and attempt to restore state from a previous run
     this.persistence = new AgentStatePersistence(this.memory);
@@ -135,9 +144,10 @@ export class Agent {
     // or future criteria checks) — not by fragile outcome-string matching.
     const goalCompleted = this.goals.isComplete();
 
-    // Reflect: pass observations, ranked plan, extracted action list, and outcome results
+    // Reflect: pass observations, ranked plan, extracted action list, outcome results,
+    // and cycle evaluations so the Reflector can exercise strategy authority.
     const executedActions = cycleData.results.map((r: any) => r.action);
-    await this.reflector.reflect(cycleData.observations, cycleData.plan, executedActions, cycleData.results);
+    await this.reflector.reflect(cycleData.observations, cycleData.plan, executedActions, cycleData.results, cycleData.evaluations);
 
     // Background pattern extraction: runs every N cycles so the agent progressively
     // learns from repeated failures and successful strategies stored in memory.
