@@ -121,8 +121,23 @@ async function startServer() {
       }
       // SEC-4: Sanitize webhook content — strip privileged command tokens before injecting
       // into the agent instruction queue to prevent prompt-injection attacks.
+      // Covers common jailbreak / goal-hijack patterns targeting this agent's capabilities.
+      const INJECTION_PATTERNS: RegExp[] = [
+        /override\s+goal\s*:/gi,
+        /ignore\s+(all\s+)?(previous|prior|above|earlier)\s+instructions?/gi,
+        /forget\s+(your\s+)?(previous\s+)?instructions?/gi,
+        /new\s+(primary\s+)?goal\s*:/gi,
+        /you\s+are\s+now\s+(a|an)\s+/gi,
+        /\bsystem\s*:/gi,
+        /ALLOW_SELF_MODIFICATION/g,
+        /ALLOW_CODE_EVAL/g,
+        /DRY_RUN\s*=\s*false/gi,
+      ];
       const sanitizedContent = event.content
-        ? event.content.replace(/override\s+goal\s*:/gi, '[BLOCKED]:')
+        ? INJECTION_PATTERNS.reduce(
+            (s, re) => s.replace(re, '[BLOCKED]'),
+            event.content
+          )
         : undefined;
       const instruction = sanitizedContent
         ? `moltbook_event(${event.type}): ${sanitizedContent}`
