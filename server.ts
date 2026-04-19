@@ -32,7 +32,10 @@ async function startServer() {
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('X-XSS-Protection', '1; mode=block');
     res.setHeader('Referrer-Policy', 'no-referrer');
-    // CSP: allow same-origin scripts/styles (React SPA uses inline styles via Tailwind)
+    // CSP: 'unsafe-inline' and 'unsafe-eval' are required because the React SPA
+    // uses Tailwind (which generates inline styles) and Vite's dev server uses eval.
+    // A stricter nonce-based CSP would need server-rendered HTML; that refactor
+    // is tracked separately. This still blocks third-party script injection.
     res.setHeader(
       'Content-Security-Policy',
       "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
@@ -86,10 +89,15 @@ async function startServer() {
         return res.status(200).json({ acknowledged: true, processed: false });
       }
       // Translate the webhook event into an agent instruction.
-      // Strip 'override goal:' prefix to prevent external actors from hijacking
-      // the agent's primary goal via crafted webhook payloads (prompt injection).
+      // Sanitize content to prevent external actors from injecting privileged
+      // commands via crafted webhook payloads (prompt injection). We strip
+      // goal-override patterns and common instruction-injection phrases.
       const sanitizedContent = event.content
-        ? event.content.replace(/override\s+goal\s*:/gi, '[goal-override-blocked]:')
+        ? event.content
+            .replace(/override\s+goal\s*:/gi, '[goal-override-blocked]:')
+            .replace(/ignore\s+(previous|prior|above)\s+instructions?/gi, '[instruction-blocked]')
+            .replace(/system\s*prompt\s*:/gi, '[system-prompt-blocked]:')
+            .replace(/you\s+are\s+now\s+/gi, '[role-change-blocked] ')
         : undefined;
       const instruction = sanitizedContent
         ? `moltbook_event(${event.type}): ${sanitizedContent}`

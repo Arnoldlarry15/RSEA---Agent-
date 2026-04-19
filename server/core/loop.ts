@@ -70,10 +70,13 @@ export class AgentLoop {
     const run = async () => {
       if (!this.isRunning) return;
       await this.step();
-      // Use a longer interval when the agent is in a failure backoff state
-      const nextInterval = this.consecutiveFailures >= AgentLoop.MAX_FAILURES_BEFORE_BACKOFF
+      // Use a longer interval when the agent is in a failure backoff state.
+      // Clamp explicitly here to guard against any future mutation of this.interval
+      // that bypasses setInterval()'s bounds check (satisfies resource-exhaustion check).
+      const rawInterval = this.consecutiveFailures >= AgentLoop.MAX_FAILURES_BEFORE_BACKOFF
         ? AgentLoop.RECOVERY_INTERVAL_MS
         : this.interval;
+      const nextInterval = Math.max(1000, Math.min(rawInterval, 600000));
       this.timer = setTimeout(run, nextInterval);
     };
     
