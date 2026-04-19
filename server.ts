@@ -11,6 +11,7 @@ import { getLogs, subscribeToLogs, getLogsByTraceId } from './server/utils/logge
 import { ingestWebhookEvent, registerAgent } from './server/adapters/moltbook';
 import { VERBOSITY, getDecisionAggressiveness, getConfidenceThreshold } from './server/core/config';
 
+
 async function startServer() {
   const app = express();
   const httpServer = createHttpServer(app);
@@ -39,22 +40,27 @@ async function startServer() {
     app.set('trust proxy', isNaN(Number(trustProxy)) ? trustProxy : Number(trustProxy));
   }
 
-  app.use(express.json({ limit: '100kb' }));
 
-  // SEC-8: Security response headers — applied to every response
+  // ── Security response headers ──────────────────────────────────────────────
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('X-XSS-Protection', '1; mode=block');
     res.setHeader('Referrer-Policy', 'no-referrer');
+    // CSP: 'unsafe-inline' and 'unsafe-eval' are required because the React SPA
+    // uses Tailwind (which generates inline styles) and Vite's dev server uses eval.
+    // A stricter nonce-based CSP would need server-rendered HTML; that refactor
+    // is tracked separately. This still blocks third-party script injection.
     res.setHeader(
       'Content-Security-Policy',
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:"
+      "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+      "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+      "connect-src 'self' ws: wss:; font-src 'self';"
     );
     next();
   });
 
-  // Bearer token middleware for protected endpoints.
+  // ── Bearer token middleware for protected endpoints ────────────────────────
   // In production API_SECRET must be set; requests are rejected if it is missing.
   const requireAuth = (req: any, res: any, next: any) => {
     const secret = process.env.API_SECRET;

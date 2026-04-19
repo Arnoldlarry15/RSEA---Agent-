@@ -26,6 +26,11 @@ const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS ?? '10000', 10);
 // ── Token management ──────────────────────────────────────────────────────────
 
 let currentToken: string = process.env.MOLTBOOK_API_TOKEN ?? '';
+/** Guard flag to prevent concurrent token-refresh races.
+ *  Node.js is single-threaded: between the `if (refreshInProgress)` check and the
+ *  `refreshInProgress = true` assignment there is no `await`, so no other microtask
+ *  can interleave — the flag is safe without an async mutex in this runtime model. */
+let refreshInProgress = false;
 
 /** Replace the in-memory Bearer token (e.g. after a refresh). */
 export function setMoltbookToken(token: string) {
@@ -34,10 +39,12 @@ export function setMoltbookToken(token: string) {
 
 /** Attempt to refresh the access token using the configured refresh URL. */
 async function refreshToken(): Promise<void> {
+  if (refreshInProgress) return; // Skip if a refresh is already in flight
   const refreshUrl = process.env.MOLTBOOK_REFRESH_URL;
   const refreshCredential = process.env.MOLTBOOK_REFRESH_TOKEN;
   if (!refreshUrl || !refreshCredential) return;
 
+  refreshInProgress = true;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -55,6 +62,7 @@ async function refreshToken(): Promise<void> {
     }
   } finally {
     clearTimeout(timer);
+    refreshInProgress = false;
   }
 }
 

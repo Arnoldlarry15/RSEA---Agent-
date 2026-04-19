@@ -132,9 +132,11 @@ export class AgentLoop {
     while (this.isRunning) {
       await this.step();
       if (!this.isRunning) break;
-      const nextInterval = this.consecutiveFailures >= AgentLoop.MAX_FAILURES_BEFORE_BACKOFF
+      // Clamp the interval to safe bounds as a defence-in-depth measure (resource-exhaustion guard).
+      const rawInterval = this.consecutiveFailures >= AgentLoop.MAX_FAILURES_BEFORE_BACKOFF
         ? AgentLoop.RECOVERY_INTERVAL_MS
         : this.interval;
+      const nextInterval = Math.max(1000, Math.min(rawInterval, 600000));
       await this.runtimeLoop.sleep(nextInterval);
     }
   }

@@ -2,11 +2,13 @@ services:
   rsea-agent:
     build: .
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:${PORT:-3000}"
     environment:
       - NODE_ENV=production
       # Required in production — all authenticated endpoints reject requests without this
       - API_SECRET=${API_SECRET}
+      # Configurable listen port (default 3000)
+      - PORT=${PORT:-3000}
       # LLM provider selection (gemini | openai | anthropic | grok | ollama)
       - LLM_PROVIDER=${LLM_PROVIDER:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
@@ -44,7 +46,7 @@ services:
     restart: unless-stopped
     # DEPLOY-3: Health check so orchestrators can detect unhealthy containers
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:${PORT:-3000}/api/health"]
       interval: 30s
       timeout: 5s
       start_period: 10s

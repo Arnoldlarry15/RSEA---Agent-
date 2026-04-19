@@ -229,9 +229,12 @@ export class Controller {
     try {
       const updatedModifiers = await this.llm.generateModifiers(recentContext, this.globalPromptModifiers);
       if (updatedModifiers) {
+        logEvent('self_modification', {
+          severity: 'CRITICAL',
+          previous: [...this.globalPromptModifiers],
+          updated: updatedModifiers,
+        });
         this.globalPromptModifiers = updatedModifiers;
-        // AUDIT-3: Log every modifier change as CRITICAL for human review
-        logEvent('self_modification_CRITICAL', { updatedModifiers: this.globalPromptModifiers });
       }
     } catch (e) {
       console.error("Self-mod failed", e);
