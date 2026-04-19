@@ -23,6 +23,9 @@ services:
       - ALLOW_SELF_MODIFICATION=${ALLOW_SELF_MODIFICATION:-false}
       # Optional: custom signal feed URL
       - SIGNAL_FEED_URL=${SIGNAL_FEED_URL:-}
+      # The public URL where this service is hosted — used by the Moltbook adapter
+      # to register a webhookUrl so the platform knows where to send incoming events.
+      - APP_URL=${APP_URL:-}
       # Optional: Moltbook adapter configuration
       - MOLTBOOK_API_URL=${MOLTBOOK_API_URL:-}
       - MOLTBOOK_API_TOKEN=${MOLTBOOK_API_TOKEN:-}
