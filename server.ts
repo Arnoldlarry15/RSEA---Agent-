@@ -11,11 +11,6 @@ import { getLogs, subscribeToLogs, getLogsByTraceId } from './server/utils/logge
 import { ingestWebhookEvent, registerAgent } from './server/adapters/moltbook';
 import { VERBOSITY, getDecisionAggressiveness, getConfidenceThreshold } from './server/core/config';
 
-// ── Production startup guard ─────────────────────────────────────────────────
-if (process.env.NODE_ENV === 'production' && !process.env.API_SECRET) {
-  console.error('[FATAL] API_SECRET must be set in production. Exiting.');
-  process.exit(1);
-}
 
 async function startServer() {
   const app = express();
@@ -45,20 +40,6 @@ async function startServer() {
     app.set('trust proxy', isNaN(Number(trustProxy)) ? trustProxy : Number(trustProxy));
   }
 
-  app.use(express.json({ limit: '100kb' }));
-
-  // SEC-8: Security response headers — applied to every response
-  app.use((_req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('X-XSS-Protection', '1; mode=block');
-    res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader(
-      'Content-Security-Policy',
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:"
-    );
-    next();
-  });
 
   // ── Security response headers ──────────────────────────────────────────────
   app.use((_req, res, next) => {
