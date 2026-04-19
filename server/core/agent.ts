@@ -59,6 +59,10 @@ export class Agent {
     // Background pattern extractor
     this.patternExtractor = new PatternExtractor(this.episodic, this.semantic, this.strategic);
 
+    this.controller = new Controller(this.llm, this.memory, this.retriever);
+
+    // Reflector is wired after the Controller so the strategy callbacks
+    // reference a fully-initialised controller instance.
     this.reflector = new Reflector(
       this.llm,
       this.memory,
@@ -66,7 +70,6 @@ export class Agent {
       (updates, change, impact) => this.controller.updateStrategy(updates, change, impact),
       () => this.controller.getStrategy(),
     );
-    this.controller = new Controller(this.llm, this.memory, this.retriever);
 
     // Initialise persistence and attempt to restore state from a previous run
     this.persistence = new AgentStatePersistence(this.memory);

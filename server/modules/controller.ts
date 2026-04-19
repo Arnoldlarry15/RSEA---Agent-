@@ -174,7 +174,7 @@ export class Controller {
         success: ev.evaluation.success,
         score: ev.evaluation.score,
         delta: ev.evaluation.delta,
-        confidence: (ev.evaluation as any).confidence ?? null,
+        confidence: ev.evaluation.confidence ?? null,
         verified: ev.verification.verified,
         verificationFlags: ev.verification.flags,
       });
