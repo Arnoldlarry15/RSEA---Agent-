@@ -281,8 +281,12 @@ describe('HTTP API — end-to-end', () => {
 
   it('11c. GET /api/metrics/prometheus returns 401 when API_SECRET is set and no token', async () => {
     process.env.API_SECRET = 'prom-secret';
-    const res = await get('/api/metrics/prometheus');
-    expect(res.status).toBe(401);
+    try {
+      const res = await get('/api/metrics/prometheus');
+      expect(res.status).toBe(401);
+    } finally {
+      delete process.env.API_SECRET;
+    }
   });
 
   it('11d. GET /api/metrics/prometheus returns Prometheus text format', async () => {

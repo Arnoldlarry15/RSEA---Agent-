@@ -32,8 +32,13 @@ spec:
 
       containers:
         - name: rsea-agent
-          # Replace with your container registry / tag
-          image: rsea-agent:latest
+          # Replace with your actual container registry and a specific version tag
+          # or commit SHA.  Using `latest` is discouraged in production because it
+          # makes deployments non-deterministic.
+          # Examples:
+          #   image: your-registry.io/rsea-agent:0.1.0
+          #   image: your-registry.io/rsea-agent:sha-abc123
+          image: your-registry.io/rsea-agent:0.1.0
           imagePullPolicy: Always
           ports:
             - name: http
