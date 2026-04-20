@@ -1,23 +1,19 @@
 import 'dotenv/config';
-import express, { Request } from 'express';
+import express from 'express';
 import path from 'path';
-import fs from 'fs';
 import { timingSafeEqual } from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { createServer as createHttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { AgentLoop } from './server/core/loop';
-import { getLogs, subscribeToLogs, getLogsByTraceId } from './server/utils/logger';
-import { ingestWebhookEvent, registerAgent } from './server/adapters/moltbook';
-import { VERBOSITY, getDecisionAggressiveness, getConfidenceThreshold } from './server/core/config';
+import { getLogs, subscribeToLogs } from './server/utils/logger';
+import { registerAgent } from './server/adapters/moltbook';
+import { createApp } from './server/app';
 
 
 async function startServer() {
-  const app = express();
-  const httpServer = createHttpServer(app);
-  const PORT = parseInt(process.env.PORT ?? '3000', 10);
-
   const isProduction = process.env.NODE_ENV === 'production';
+  const PORT = parseInt(process.env.PORT ?? '3000', 10);
 
   // SEC-5: Fail fast in production when API_SECRET is not set
   if (isProduction && !process.env.API_SECRET) {
@@ -35,256 +31,15 @@ async function startServer() {
 
   // Trust the first proxy hop (e.g. nginx / Render / Railway) when explicitly opted in.
   // Set TRUST_PROXY=1 (or a specific IP/CIDR) in production behind a reverse proxy.
-  const trustProxy = process.env.TRUST_PROXY;
-  if (trustProxy) {
-    app.set('trust proxy', isNaN(Number(trustProxy)) ? trustProxy : Number(trustProxy));
-  }
+  const rawTrustProxy = process.env.TRUST_PROXY;
+  const trustProxy = rawTrustProxy
+    ? (isNaN(Number(rawTrustProxy)) ? rawTrustProxy : Number(rawTrustProxy))
+    : undefined;
 
-
-  // ── Security response headers ──────────────────────────────────────────────
-  app.use((_req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('X-XSS-Protection', '1; mode=block');
-    res.setHeader('Referrer-Policy', 'no-referrer');
-    // CSP: 'unsafe-inline' and 'unsafe-eval' are required because the React SPA
-    // uses Tailwind (which generates inline styles) and Vite's dev server uses eval.
-    // A stricter nonce-based CSP would need server-rendered HTML; that refactor
-    // is tracked separately. This still blocks third-party script injection.
-    res.setHeader(
-      'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
-      "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
-      "connect-src 'self' ws: wss:; font-src 'self';"
-    );
-    next();
-  });
-
-  // ── Bearer token middleware for protected endpoints ────────────────────────
-  // In production API_SECRET must be set; requests are rejected if it is missing.
-  const requireAuth = (req: any, res: any, next: any) => {
-    const secret = process.env.API_SECRET;
-    if (!secret) {
-      if (process.env.NODE_ENV === 'production') {
-        console.error('[AUTH] API_SECRET is not configured — rejecting request');
-        return res.status(503).json({ error: 'Server misconfigured: API_SECRET not set' });
-      }
-      // Development only: allow unauthenticated access when no secret is configured
-      return next();
-    }
-    const authHeader: string = req.headers['authorization'] ?? '';
-    const expected = `Bearer ${secret}`;
-    const headerBuf = Buffer.from(authHeader);
-    const expectedBuf = Buffer.from(expected);
-    if (headerBuf.length !== expectedBuf.length || !timingSafeEqual(headerBuf, expectedBuf)) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    return next();
-  };
-
-  // Log all requests for debugging
-  app.use((req, res, next) => {
-    if (req.url.startsWith('/api')) {
-      console.log(`[API REQUEST] ${req.method} ${req.url}`);
-    }
-    next();
-  });
-
-  // Simple in-memory rate limiter for POST /api/command and POST /api/control: max 20 requests per IP per minute
-  const commandRateLimitMap = new Map<string, { count: number; resetAt: number }>();
-  const COMMAND_RATE_LIMIT = 20;
-  const COMMAND_RATE_WINDOW_MS = 60_000;
-
-  function getClientIp(req: Request): string {
-    // req.ip respects the trust proxy setting; fall back to socket address if not set.
-    return req.ip || req.socket?.remoteAddress || 'unknown';
-  }
-
-  function isRateLimited(ip: string): boolean {
-    const now = Date.now();
-    const entry = commandRateLimitMap.get(ip);
-    if (!entry || now > entry.resetAt) {
-      commandRateLimitMap.set(ip, { count: 1, resetAt: now + COMMAND_RATE_WINDOW_MS });
-      return false;
-    }
-    if (entry.count >= COMMAND_RATE_LIMIT) return true;
-    entry.count++;
-    return false;
-  }
-
-  // Initialize Agent
+  // Initialize Agent and create the fully-configured Express application.
   const agentLoop = new AgentLoop();
-
-  // Moltbook webhook — receives platform events and forwards them to the agent
-  app.post('/api/webhooks/moltbook', (req, res) => {
-    try {
-      const rawBody = JSON.stringify(req.body); // body already parsed by express.json()
-      const secretHeader = req.headers['x-moltbook-secret'] as string | undefined;
-      const event = ingestWebhookEvent(rawBody, secretHeader);
-      if (!event) {
-        // Duplicate or invalid — acknowledge silently so the platform stops retrying
-        return res.status(200).json({ acknowledged: true, processed: false });
-      }
-      // SEC-4: Sanitize webhook content — strip privileged command tokens before injecting
-      // into the agent instruction queue to prevent prompt-injection attacks.
-      // Covers common jailbreak / goal-hijack patterns targeting this agent's capabilities.
-      const INJECTION_PATTERNS: RegExp[] = [
-        /override\s+goal\s*:/gi,
-        /ignore\s+(all\s+)?(previous|prior|above|earlier)\s+instructions?/gi,
-        /forget\s+(your\s+)?(previous\s+)?instructions?/gi,
-        /new\s+(primary\s+)?goal\s*:/gi,
-        /you\s+are\s+now\s+(a|an)\s+/gi,
-        /\bsystem\s*:/gi,
-        /ALLOW_SELF_MODIFICATION/g,
-        /ALLOW_CODE_EVAL/g,
-        /DRY_RUN\s*=\s*false/gi,
-      ];
-      const sanitizedContent = event.content
-        ? INJECTION_PATTERNS.reduce(
-            (s, re) => s.replace(re, '[BLOCKED]'),
-            event.content
-          )
-        : undefined;
-      const instruction = sanitizedContent
-        ? `moltbook_event(${event.type}): ${sanitizedContent}`
-        : `moltbook_event(${event.type}): ${JSON.stringify(event)}`;
-      agentLoop.getAgent().addInstruction(instruction);
-      res.status(200).json({ acknowledged: true, processed: true, eventId: event.id });
-    } catch (err) {
-      res.status(500).json({ error: 'Webhook processing failed' });
-    }
-  });
-
-  // Root test route
-  app.get('/ping', (req, res) => {
-    res.send('pong');
-  });
-
-  // API Routes
-  app.get('/api/status', (req, res) => {
-    try {
-      res.json({
-        status: 'active',
-        framework: 'RSEA',
-        version: '1.0.0',
-        uptime: process.uptime(),
-        goals: agentLoop.getAgent().getGoals().getGoals(),
-      });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to generate status' });
-    }
-  });
-
-  app.get('/api/health', (req, res) => {
-    try {
-      const health = agentLoop.getAgent().checkHealth();
-      res.status(health.status === 'healthy' ? 200 : 503).json(health);
-    } catch (err) {
-      res.status(500).json({ status: 'unhealthy', error: 'Internal health check failure' });
-    }
-  });
-
-  app.get('/api/logs', requireAuth, (req, res) => {
-    try {
-      const { traceId } = req.query;
-      if (traceId && typeof traceId === 'string') {
-        const traced = getLogsByTraceId(traceId);
-        return res.json(traced);
-      }
-      const logs = getLogs();
-      res.json(logs.reverse().slice(0, 100)); // Last 100 logs
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to fetch logs' });
-    }
-  });
-
-  app.get('/api/memory', requireAuth, (req, res) => {
-    try {
-      const memory = agentLoop.getAgent().getMemory().getSnapshot();
-      res.json(memory);
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to fetch memory' });
-    }
-  });
-
-  app.get('/api/debug/state', requireAuth, (req, res) => {
-    try {
-      const agent = agentLoop.getAgent();
-      res.json({
-        loop: agentLoop.getTelemetry(),
-        goals: agent.getGoals().getGoals(),
-        memoryStats: {
-          shortTermCount: agent.getMemory().getSnapshot().shortTerm.length,
-          longTermCount: Object.keys(agent.getMemory().getSnapshot().longTerm).length
-        },
-        config: {
-          verbosity: VERBOSITY,
-          decisionAggressiveness: getDecisionAggressiveness(),
-          confidenceThreshold: getConfidenceThreshold(),
-          dryRun: (process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false',
-          killSwitch: agentLoop.isKillSwitchActive(),
-        },
-        nodeEnv: process.env.NODE_ENV || 'development'
-      });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to fetch debug state' });
-    }
-  });
-
-  app.post('/api/command', requireAuth, (req, res) => {
-    try {
-      const ip = getClientIp(req);
-      if (isRateLimited(ip)) {
-        return res.status(429).json({ error: 'Rate limit exceeded: max 20 requests per minute per IP' });
-      }
-      const { command } = req.body;
-      if (!command || typeof command !== 'string') {
-        return res.status(400).json({ error: typeof command !== 'string' ? 'Command must be a string' : 'No command provided' });
-      }
-      const trimmed = command.trim();
-      if (trimmed.length === 0 || trimmed.length > 2000) {
-        return res.status(400).json({ error: 'Command must be between 1 and 2000 characters' });
-      }
-      agentLoop.getAgent().addInstruction(trimmed);
-      res.json({ message: 'Instruction queued' });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to process command' });
-    }
-  });
-
-  app.post('/api/control', requireAuth, (req, res) => {
-    try {
-      const ip = getClientIp(req);
-      if (isRateLimited(ip)) {
-        return res.status(429).json({ error: 'Rate limit exceeded: max 20 requests per minute per IP' });
-      }
-      const { action, interval } = req.body;
-      if (action === 'start') {
-        agentLoop.start();
-        res.json({ message: 'Agent started' });
-      } else if (action === 'stop') {
-        agentLoop.stop();
-        res.json({ message: 'Agent stopped' });
-      } else if (action === 'set_interval') {
-        if (interval && typeof interval === 'number') {
-          agentLoop.setInterval(interval);
-          res.json({ message: `Agent interval set to ${interval}ms` });
-        } else {
-          res.status(400).json({ error: 'Invalid interval value' });
-        }
-      } else if (action === 'kill_switch_on') {
-        agentLoop.activateKillSwitch();
-        res.json({ message: 'Kill switch activated — agent cycles paused' });
-      } else if (action === 'kill_switch_off') {
-        agentLoop.deactivateKillSwitch();
-        res.json({ message: 'Kill switch deactivated — agent cycles resumed' });
-      } else {
-        res.status(400).json({ error: 'Invalid action' });
-      }
-    } catch (err) {
-      res.status(500).json({ error: 'Control action failed' });
-    }
-  });
+  const app = createApp(agentLoop, { isProduction, trustProxy });
+  const httpServer = createHttpServer(app);
 
   // SEC-2: WebSocket server with bearer-token authentication
   const wss = new WebSocketServer({ server: httpServer, path: '/ws/logs' });
@@ -324,7 +79,7 @@ async function startServer() {
   });
 
   // Vite middleware setup
-  if (process.env.NODE_ENV !== 'production') {
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -333,7 +88,7 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
