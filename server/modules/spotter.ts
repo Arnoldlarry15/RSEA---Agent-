@@ -12,6 +12,53 @@ function spotterFetch(url: string): Promise<Response> {
 
 export class Spotter {
   /**
+   * Fetches the configured signal feed URL and returns up to two parsed
+   * observation objects.  Only called after the SSRF guard has passed.
+   */
+  private async _fetchSignalFeed(
+    url: string,
+    ts: number,
+    now: string,
+  ): Promise<{ obs1: any; obs2: any } | null> {
+    try {
+      const feedRes = await spotterFetch(url);
+      const feedData = await feedRes.json();
+      const items: any[] = Array.isArray(feedData)
+        ? feedData
+        : (feedData.observations ?? feedData.items ?? feedData.signals ?? []);
+
+      const obs1 = items.length > 0
+        ? {
+            id: `obs_${ts}_1`,
+            type: items[0].type ?? 'signal',
+            asset: items[0].asset,
+            price: items[0].price != null ? String(items[0].price) : undefined,
+            content: items[0].content,
+            source: items[0].source ?? url,
+            timestamp: items[0].timestamp ?? now,
+          }
+        : null;
+
+      const obs2 = items.length > 1
+        ? {
+            id: `obs_${ts}_2`,
+            type: items[1].type ?? 'signal',
+            asset: items[1].asset,
+            price: items[1].price != null ? String(items[1].price) : undefined,
+            content: items[1].content,
+            source: items[1].source ?? url,
+            timestamp: items[1].timestamp ?? now,
+          }
+        : null;
+
+      return { obs1, obs2 };
+    } catch {
+      console.warn("Failed to fetch signal feed from SIGNAL_FEED_URL, using simulated observations.");
+      return null;
+    }
+  }
+
+  /**
    * Scans for incoming data (Integrates real price data and simulation)
    */
   async scan() {
@@ -76,36 +123,10 @@ export class Spotter {
       if (isSsrfTarget(signalFeedUrl)) {
         console.warn('[Spotter] SIGNAL_FEED_URL targets a private/loopback address or is malformed — skipping fetch, using simulated observations.');
       } else {
-      try {
-        const feedRes = await spotterFetch(signalFeedUrl);
-        const feedData = await feedRes.json();
-        const items: any[] = Array.isArray(feedData) ? feedData : (feedData.observations ?? feedData.items ?? feedData.signals ?? []);
-        if (items.length > 0) {
-          signalObs1 = {
-            id: `obs_${ts}_1`,
-            type: items[0].type ?? 'signal',
-            asset: items[0].asset,
-            price: items[0].price != null ? String(items[0].price) : undefined,
-            content: items[0].content,
-            source: items[0].source ?? signalFeedUrl,
-            timestamp: items[0].timestamp ?? now
-          };
-        }
-        if (items.length > 1) {
-          signalObs2 = {
-            id: `obs_${ts}_2`,
-            type: items[1].type ?? 'signal',
-            asset: items[1].asset,
-            price: items[1].price != null ? String(items[1].price) : undefined,
-            content: items[1].content,
-            source: items[1].source ?? signalFeedUrl,
-            timestamp: items[1].timestamp ?? now
-          };
-        }
-      } catch (err) {
-        console.warn("Failed to fetch signal feed from SIGNAL_FEED_URL, using simulated observations.");
+        const fetched = await this._fetchSignalFeed(signalFeedUrl, ts, now);
+        if (fetched?.obs1) signalObs1 = fetched.obs1;
+        if (fetched?.obs2) signalObs2 = fetched.obs2;
       }
-      } // end isSsrfTarget else block
     }
 
     // Combine real data and signal observations

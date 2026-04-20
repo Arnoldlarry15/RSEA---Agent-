@@ -9,6 +9,7 @@ import { Observer } from '../core/observation/observer';
 import { Comparator } from '../core/evaluation/comparator';
 import { OutcomeVerifier } from '../core/evaluation/verifier';
 import { PreExecutionRiskGate } from '../core/risk/gate';
+import { RulesEngine } from '../core/rules';
 import { logEvent } from '../utils/logger';
 import {
   StrategyConfig,
@@ -41,6 +42,13 @@ export class Controller {
   private comparator: Comparator;
   private verifier: OutcomeVerifier;
   private riskGate: PreExecutionRiskGate;
+  /**
+   * Shared RulesEngine instance — created once per Controller and reset at
+   * the start of every cycle.  Passing it down to the Sniper (and then to the
+   * Executor) ensures that the MAX_ACTIONS_PER_CYCLE counter accumulates
+   * correctly across all parallel / sequential sniper calls within one cycle.
+   */
+  private rulesEngine: RulesEngine;
   private llm: LLMInterface;
   private memory: MemorySystem;
 
@@ -72,7 +80,8 @@ export class Controller {
     this.spotter = new Spotter();
     this.planner = new Planner(this.llm, this.memory, retriever);
     this.evaluator = new Evaluator(this.llm);
-    this.sniper = new Sniper();
+    this.rulesEngine = new RulesEngine();
+    this.sniper = new Sniper(this.rulesEngine);
     this.observer = new Observer();
     this.comparator = new Comparator();
     this.verifier = new OutcomeVerifier();
@@ -84,6 +93,9 @@ export class Controller {
 
   async runCycle(objective: string, context: any[]) {
     this.cycleCount++;
+    // Reset the shared RulesEngine counter so the MAX_ACTIONS_PER_CYCLE cap
+    // applies cleanly to this cycle rather than carrying over from the last.
+    this.rulesEngine.resetCycle();
 
     // 1. Observe
     const observations = await this.spotter.scan();

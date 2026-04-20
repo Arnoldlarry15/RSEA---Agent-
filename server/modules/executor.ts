@@ -1,4 +1,4 @@
-import vm from 'vm';
+import { Worker } from 'worker_threads';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createHash } from 'crypto';
@@ -117,11 +117,116 @@ export interface ExecutionConstraints {
   timeout?: number;
 }
 
+/**
+ * Per-worker memory limits for isolated code_eval execution.
+ *
+ * 64 MB old-generation / 16 MB young-generation is generous for typical
+ * scripting tasks (arithmetic, string manipulation, simple loops) while
+ * being tight enough to prevent a rogue script from exhausting the host
+ * node process's heap.  Increase these values if your workload legitimately
+ * requires more memory; lower them for a stricter sandbox.
+ */
+const CODE_EVAL_WORKER_OLD_GEN_MB = 64;
+const CODE_EVAL_WORKER_YOUNG_GEN_MB = 16;
+
+/**
+ * Executes untrusted code in an isolated worker thread with hard memory limits.
+ * The vm sandbox inside the worker still applies the denylist guard and a CPU
+ * timeout.  Running in a separate thread means a sandbox escape cannot directly
+ * corrupt the main-process heap, and the resource limits cap memory use.
+ */
+function runCodeInWorker(code: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // Worker script is evaluated as CommonJS (no import/export statements) so
+    // `require` is available despite the parent project using ESM modules.
+    const workerScript = `
+      const { workerData, parentPort } = require('worker_threads');
+      const vm = require('vm');
+      let capturedOutput = '';
+      // Capture console output to a string; all three methods share the same
+      // append-to-string behaviour to avoid repeating the logic three times.
+      const capture = (...args) => { capturedOutput += args.map(String).join(' ') + '\\n'; };
+      const sandbox = { console: { log: capture, error: capture, warn: capture } };
+      try {
+        const script = new vm.Script(workerData.code);
+        script.runInNewContext(vm.createContext(sandbox), { timeout: workerData.timeoutMs });
+        parentPort.postMessage({ output: capturedOutput || '(no output)' });
+      } catch (err) {
+        parentPort.postMessage({ error: err.message });
+      }
+    `;
+
+    const worker = new Worker(workerScript, {
+      eval: true,
+      workerData: { code, timeoutMs },
+      resourceLimits: {
+        maxOldGenerationSizeMb: CODE_EVAL_WORKER_OLD_GEN_MB,
+        maxYoungGenerationSizeMb: CODE_EVAL_WORKER_YOUNG_GEN_MB,
+      },
+    });
+
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+
+    // Kill the worker if it hasn't responded within the deadline.
+    // The extra 500 ms beyond timeoutMs gives the vm a chance to throw its own
+    // timeout error and send a 'message' reply before the outer kill fires,
+    // producing a more informative "Script execution timed out" error rather
+    // than the generic "worker exited unexpectedly" fallback.
+    const killTimer = setTimeout(() => {
+      void worker.terminate();
+      settle(() => reject(new Error('Code evaluation timed out')));
+    }, timeoutMs + 500);
+
+    worker.on('message', (msg: { output?: string; error?: string }) => {
+      clearTimeout(killTimer);
+      void worker.terminate();
+      settle(() => {
+        if (msg.error) reject(new Error(msg.error));
+        else resolve(msg.output ?? '(no output)');
+      });
+    });
+
+    worker.on('error', (err: Error) => {
+      clearTimeout(killTimer);
+      settle(() => reject(err));
+    });
+
+    worker.on('exit', (exitCode: number) => {
+      clearTimeout(killTimer);
+      // Code 0 means the worker finished cleanly after sending its message —
+      // the promise was already settled by the 'message' handler, so this is a
+      // no-op.  A non-zero exit (OOM kill, SIGKILL, etc.) is treated as an error.
+      settle(() => {
+        if (exitCode !== 0) {
+          reject(new Error(
+            `code_eval worker exited unexpectedly (code ${exitCode}). ` +
+            `This may indicate an out-of-memory condition or a signal termination.`,
+          ));
+        }
+      });
+    });
+  });
+}
+
 export class Executor {
   private registry: ToolRegistry;
+  /**
+   * Optional shared RulesEngine injected by the Controller so that the
+   * per-cycle action counter accumulates across all Sniper/Executor calls
+   * within the same cycle.  When null (standalone use), a fresh instance is
+   * created per execute() call — preserving the isolated-counter behaviour
+   * expected by direct callers and unit tests.
+   */
+  private injectedRulesEngine: RulesEngine | null;
 
-  constructor(registry?: ToolRegistry) {
+  constructor(registry?: ToolRegistry, rulesEngine?: RulesEngine) {
     this.registry = registry ?? createDefaultRegistry();
+    this.injectedRulesEngine = rulesEngine ?? null;
   }
 
   /**
@@ -131,8 +236,11 @@ export class Executor {
    */
   async execute(actions: any[], constraints?: ExecutionConstraints) {
     const results = [];
-    // Fresh RulesEngine per execute() call so the per-cycle counter starts at zero.
-    const ruleEngine = new RulesEngine();
+    // Use an injected shared RulesEngine (from Controller) when provided so that
+    // the per-cycle action counter accumulates across all Sniper/Executor calls
+    // within the same cycle.  Fall back to a fresh instance per call for
+    // standalone use so that isolated-counter behaviour is preserved.
+    const ruleEngine = this.injectedRulesEngine ?? new RulesEngine();
     
     for (const action of actions) {
       const effectiveDryRun = constraints?.dryRun ?? isDryRun();
@@ -253,32 +361,25 @@ export class Executor {
             status = 'blocked';
             outcome = 'code_eval is disabled. Set ALLOW_CODE_EVAL=true to enable this tool (see security documentation).';
           } else {
-          const code: string = action.payload?.code ?? '';
-          if (code.length > MAX_CODE_SIZE) {
-            throw new Error(`Code too large: ${code.length} chars (max ${MAX_CODE_SIZE})`);
-          }
-          // SEC-10: Denylist common sandbox-escape patterns as a defence-in-depth
-          // measure.  vm.createContext is not a hard security boundary; this check
-          // reduces the attack surface without eliminating all risk.
-          const escapeMatch = SANDBOX_ESCAPE_PATTERNS.find((p) => p.test(code));
-          if (escapeMatch) {
-            logEvent('executor_blocked', { reason: 'code_eval: unsafe pattern detected', pattern: escapeMatch.toString(), action });
-            status = 'blocked';
-            outcome = `code_eval blocked: code contains a potentially unsafe pattern (${escapeMatch}).`;
-          } else {
-          let capturedOutput = '';
-          const sandbox = {
-            console: {
-              log: (...args: any[]) => { capturedOutput += args.map(String).join(' ') + '\n'; },
-              error: (...args: any[]) => { capturedOutput += args.map(String).join(' ') + '\n'; },
-              warn: (...args: any[]) => { capturedOutput += args.map(String).join(' ') + '\n'; }
+            const code: string = action.payload?.code ?? '';
+            if (code.length > MAX_CODE_SIZE) {
+              throw new Error(`Code too large: ${code.length} chars (max ${MAX_CODE_SIZE})`);
             }
-          };
-          // Deny access to require, process, fs — sandbox has only the mock console
-          const script = new vm.Script(code);
-          script.runInNewContext(vm.createContext(sandbox), { timeout: 2000 });
-          outcome = capturedOutput || '(no output)';
-          }
+            // SEC-10: Denylist common sandbox-escape patterns as a defence-in-depth
+            // measure.  vm.createContext is not a hard security boundary; this check
+            // reduces the attack surface without eliminating all risk.
+            const escapeMatch = SANDBOX_ESCAPE_PATTERNS.find((p) => p.test(code));
+            if (escapeMatch) {
+              logEvent('executor_blocked', { reason: 'code_eval: unsafe pattern detected', pattern: escapeMatch.toString(), action });
+              status = 'blocked';
+              outcome = `code_eval blocked: code contains a potentially unsafe pattern (${escapeMatch}).`;
+            } else {
+              // Run the untrusted code in an isolated worker thread (Issue 3).
+              // The worker applies a cpu timeout via vm.Script and hard memory
+              // limits via worker_threads resourceLimits, so a misbehaving script
+              // cannot exhaust the main-process heap or block the event loop.
+              outcome = await runCodeInWorker(code, 2000);
+            }
           }
         } else if (action.tool === 'system_command') {
           const rawCommand: string = action.payload?.command ?? '';
