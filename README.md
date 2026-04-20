@@ -30,7 +30,7 @@ Actions pass through a two-stage control system before execution:
 
 ## Prerequisites
 
-- **Node.js** (v18+)
+- **Node.js** (v22+)
 - One of the supported LLM providers:
   - **Google Gemini** — set `GEMINI_API_KEY`
   - **OpenAI** — set `OPENAI_API_KEY`

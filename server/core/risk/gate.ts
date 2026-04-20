@@ -98,8 +98,14 @@ export class PreExecutionRiskGate {
     factors.push(`risk_tolerance=${riskTolerance.toFixed(2)} (+${tolerancePenalty})`);
 
     // ── Signal 4: reflector ban list ──────────────────────────────────────────
-    const bannedTools: string[] = memory.recall(REFLECTOR_BANS_KEY) ?? [];
-    if (Array.isArray(bannedTools) && bannedTools.includes(tool)) {
+    // recall() may return any stored value; filter to string elements to prevent
+    // silent type mismatches when the persisted data has been corrupted or
+    // serialised as a non-string array.
+    const rawBanned = memory.recall(REFLECTOR_BANS_KEY) ?? [];
+    const bannedTools: string[] = Array.isArray(rawBanned)
+      ? rawBanned.filter((t): t is string => typeof t === 'string')
+      : [];
+    if (bannedTools.includes(tool)) {
       riskScore += 40;
       factors.push(`tool_banned=true (+40)`);
     }

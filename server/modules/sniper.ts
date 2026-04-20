@@ -9,9 +9,20 @@ export class Sniper {
   private rulesEngine: RulesEngine;
   private validator: ToolValidator;
 
-  constructor() {
-    this.executor = new Executor();
-    this.rulesEngine = new RulesEngine();
+  /**
+   * @param rulesEngine Optional shared RulesEngine from the Controller.
+   *   When provided the per-cycle action counter is shared across all
+   *   Sniper/Executor calls in the same cycle, so the MAX_ACTIONS_PER_CYCLE
+   *   cap is correctly enforced end-to-end.  When omitted a fresh instance
+   *   is created for standalone use.
+   *
+   * NOTE: The PreExecutionRiskGate (4-signal composite risk check) is wired
+   * at the Controller level in `_executeWithRiskGate()` and always runs
+   * before this method is called in the normal execution path.
+   */
+  constructor(rulesEngine?: RulesEngine) {
+    this.rulesEngine = rulesEngine ?? new RulesEngine();
+    this.executor = new Executor(undefined, this.rulesEngine);
     this.validator = new ToolValidator();
   }
 
