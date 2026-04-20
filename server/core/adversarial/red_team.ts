@@ -273,12 +273,10 @@ PLAN: ${JSON.stringify(plan).substring(0, 600)}`;
     plan: any[],
     attackVectors: string[],
   ): Promise<number> {
-    // Deterministic fallback: plan validity as a proxy for disagreement.
-    const planIsFullyValid = plan.every(step => this.validator.validate(step).valid);
-    const heuristicScore = planIsFullyValid ? 20 : 80;
-
     if (!this.llm.healthCheck()) {
-      return heuristicScore;
+      // Deterministic fallback: plan validity as a proxy for disagreement.
+      const planIsFullyValid = plan.every(step => this.validator.validate(step).valid);
+      return planIsFullyValid ? 20 : 80;
     }
 
     const systemPrompt = `You are the adversarial 'Validator' agent of RSEA.
@@ -311,7 +309,9 @@ KNOWN ATTACK VECTORS: ${JSON.stringify(attackVectors).substring(0, 200)}`;
       // fall through to heuristic
     }
 
-    return heuristicScore;
+    // LLM response was invalid — fall back to deterministic heuristic.
+    const planIsFullyValid = plan.every(step => this.validator.validate(step).valid);
+    return planIsFullyValid ? 20 : 80;
   }
 
   /**

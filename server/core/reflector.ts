@@ -242,7 +242,7 @@ export class Reflector {
    */
   private _banFailingTools(evaluations: any[]): void {
     const failingTools = evaluations
-      .filter((ev) => ev?.evaluation?.success === false || (ev?.evaluation?.score ?? 100) < 30)
+      .filter((ev) => ev?.evaluation?.success === false || (ev?.evaluation?.score ?? 100) < Reflector.POOR_SCORE_THRESHOLD)
       .map((ev) => ev?.action?.tool ?? ev?.observation?.actual_outcome ?? null)
       .filter((t): t is string => typeof t === 'string' && t.length > 0);
 

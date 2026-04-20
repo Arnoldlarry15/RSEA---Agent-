@@ -166,7 +166,7 @@ export class Controller {
         : this.comparator.compare(expected, observation);
 
       logEvent('controller_evaluation', { taskId: task.id, expected, observation, evaluation, verification });
-      return { taskId: task.id, expected, observation, evaluation, verification };
+      return { taskId: task.id, tool: task.tool ?? 'unknown', expected, observation, evaluation, verification };
     }).filter((ev): ev is NonNullable<typeof ev> => ev !== null);
 
     // 6. Persist evaluations into memory so the agent learns from outcomes.
@@ -177,6 +177,7 @@ export class Controller {
       this.memory.addEvent({
         type: 'evaluation',
         taskId: ev.taskId,
+        tool: ev.tool,
         expected: ev.expected,
         actual: ev.observation.actual_outcome,
         success: ev.evaluation.success,

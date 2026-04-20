@@ -31,6 +31,7 @@ function makeFailures(tool: string, count: number): any[] {
     type: 'evaluation',
     success: false,
     verified: true,
+    tool,                         // exact tool field, now used for matching
     actual: `${tool} failed run ${i}`,
     taskId: `t${i}`,
   }));

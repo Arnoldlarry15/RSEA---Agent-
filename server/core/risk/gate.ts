@@ -82,7 +82,7 @@ export class PreExecutionRiskGate {
         e.type === 'evaluation' &&
         e.success === false &&
         e.verified !== false && // ignore unverified results to avoid noise
-        String(e.actual ?? e.taskId ?? '').toLowerCase().includes(tool.toLowerCase()),
+        e.tool === tool,        // exact match using the tool field stored by Controller
     ).length;
     if (recentFailures > 0) {
       const failurePenalty = Math.min(50, recentFailures * FAILURE_PENALTY_PER_COUNT);
