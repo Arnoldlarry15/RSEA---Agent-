@@ -15,9 +15,9 @@ export interface PersistedAgentState {
   /** Last ranked plan produced by the Planner/Evaluator, or null if unavailable. */
   activePlan: any[] | null;
   /**
-   * Most recently committed strategy version.
-   * Stored for audit/recovery purposes; full config restoration is handled
-   * by the Controller on its next cycle.
+   * Most recently committed strategy configuration.
+   * Restored on startup so accumulated risk_tolerance / exploration_rate
+   * adjustments from the Reflector and adversarial cycle survive restarts.
    */
   strategyVersion: {
     version: string;

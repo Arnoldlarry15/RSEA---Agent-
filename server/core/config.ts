@@ -31,11 +31,20 @@ function parseInt0100(raw: string | undefined, fallback: number): number {
   return isNaN(parsed) ? fallback : clamp(parsed, 0, 100);
 }
 
-const rawVerbosity = (process.env.VERBOSITY_LEVEL ?? 'normal').toLowerCase();
-export const VERBOSITY: VerbosityLevel =
-  rawVerbosity === 'silent' || rawVerbosity === 'verbose'
-    ? (rawVerbosity as VerbosityLevel)
-    : 'normal';
+const rawVerbosity = () => (process.env.VERBOSITY_LEVEL ?? 'normal').toLowerCase();
+
+/**
+ * Returns the current verbosity level, reading from the environment on every
+ * call so that tests and runtime env changes are reflected immediately.
+ * Use this instead of the deprecated VERBOSITY constant.
+ */
+export function getVerbosity(): VerbosityLevel {
+  const raw = rawVerbosity();
+  return raw === 'silent' || raw === 'verbose' ? (raw as VerbosityLevel) : 'normal';
+}
+
+/** @deprecated Use getVerbosity() — reads the env dynamically so runtime changes take effect. */
+export const VERBOSITY: VerbosityLevel = getVerbosity();
 
 /** 0.0 = extremely conservative, 1.0 = always act. Default: 0.5. Read dynamically so env overrides work at runtime. */
 export function getDecisionAggressiveness(): number {

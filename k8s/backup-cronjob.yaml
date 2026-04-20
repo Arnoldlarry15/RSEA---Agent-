@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rsea-db-backup
+  namespace: rsea
+  labels:
+    app: rsea-agent
+    component: backup
+spec:
+  # Run every 6 hours.  Adjust to match your RPO requirements.
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: rsea-agent
+            component: backup
+        spec:
+          restartPolicy: OnFailure
+          # Mount the same PVC used by the agent pod (ReadWriteOnce).
+          # The agent pod must be quiesced (kill switch ON) or stopped before
+          # this job runs to avoid concurrent write access.  For a truly
+          # non-disruptive hot backup, use the SQLite .backup pragma instead
+          # (see the inline command below).
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: rsea-data-pvc
+
+          containers:
+            - name: sqlite-backup
+              image: alpine:3.20
+              command:
+                - sh
+                - -c
+                - |
+                  set -e
+                  apk add --no-cache sqlite
+                  TIMESTAMP=$(date +%Y%m%d%H%M%S)
+                  BACKUP_FILE="/data/memory.db.${TIMESTAMP}.bak"
+                  # SQLite .backup pragma performs a safe online backup even when
+                  # the database is being written by another process.
+                  sqlite3 /data/memory.db ".backup ${BACKUP_FILE}"
+                  echo "[backup] Created ${BACKUP_FILE}"
+                  # Optional: copy to object storage.
+                  # Uncomment and configure one of the blocks below.
+                  #
+                  # --- AWS S3 ---
+                  # aws s3 cp "${BACKUP_FILE}" "s3://${BACKUP_BUCKET}/rsea-db/${TIMESTAMP}.bak"
+                  #
+                  # --- GCS ---
+                  # gsutil cp "${BACKUP_FILE}" "gs://${BACKUP_BUCKET}/rsea-db/${TIMESTAMP}.bak"
+                  #
+                  # Prune backups older than 7 days from the data volume to prevent
+                  # the PVC from filling up.
+                  find /data -name "memory.db.*.bak" -mtime +7 -delete
+                  echo "[backup] Pruned old backups. Done."
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+              # Only request a minimal resource slice — this job does very little I/O.
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "128Mi"
+              env:
+                # Uncomment if uploading to object storage:
+                # - name: BACKUP_BUCKET
+                #   value: "your-bucket-name"
+                []

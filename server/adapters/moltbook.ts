@@ -20,6 +20,7 @@ import fs from 'fs';
 import path from 'path';
 import { timingSafeEqual } from 'crypto';
 import { logEvent } from '../utils/logger';
+import { isSsrfTarget } from '../utils/ssrf';
 
 const BASE_URL = (process.env.MOLTBOOK_API_URL ?? '').replace(/\/$/, '');
 const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS ?? '10000', 10);
@@ -44,6 +45,12 @@ async function refreshToken(): Promise<void> {
   const refreshUrl = process.env.MOLTBOOK_REFRESH_URL;
   const refreshCredential = process.env.MOLTBOOK_REFRESH_TOKEN;
   if (!refreshUrl || !refreshCredential) return;
+
+  // SSRF guard: reject internal/loopback refresh URLs
+  if (isSsrfTarget(refreshUrl)) {
+    logEvent('moltbook_token_refresh_blocked', { reason: 'SSRF guard: refresh URL targets a private address', refreshUrl });
+    return;
+  }
 
   refreshInProgress = true;
   const controller = new AbortController();

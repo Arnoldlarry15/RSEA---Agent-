@@ -1,30 +1,32 @@
 # syntax=docker/dockerfile:1
 
-# ── Stage 1: build the Vite frontend ─────────────────────────────────────────
+# ── Stage 1: compile the server and build the Vite frontend ──────────────────
 FROM node:22-alpine AS builder
 WORKDIR /app
-COPY package*.json ./
+COPY package*.json tsconfig.json tsconfig.server.json ./
 RUN npm ci
 COPY . .
-RUN npm run build
+# Compile the TypeScript server to CommonJS JavaScript (dist-server/)
+# and build the React frontend (dist/).  Running both here keeps the
+# production image free of TypeScript tooling and the tsx runtime dependency.
+RUN npm run build:server
+# Mark the server output as CommonJS so Node treats the .js files correctly
+# despite the root package.json declaring "type": "module".
+RUN echo '{"type":"commonjs"}' > dist-server/package.json
+RUN npx vite build --mode production
 
 # ── Stage 2: production runtime ───────────────────────────────────────────────
 FROM node:22-alpine
 WORKDIR /app
 
 # Install production dependencies only.
-# NOTE: `tsx` remains in `dependencies` so it is available here to run the
-# TypeScript server source directly.  A future improvement is to compile the
-# server to JavaScript (`tsc -p tsconfig.server.json`) and replace the CMD
-# below with `node dist-server/server.js`, removing the tsx runtime dependency.
+# tsx is now in devDependencies, so --omit=dev keeps it out of the image.
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-# Copy compiled frontend assets and server source
+# Copy compiled server JS, frontend assets, and the CJS marker
+COPY --from=builder /app/dist-server ./dist-server
 COPY --from=builder /app/dist ./dist
-COPY server.ts ./
-COPY server/ ./server/
-COPY tsconfig.json ./
 
 # Create the data directory before dropping privileges
 RUN mkdir -p /app/data
@@ -46,4 +48,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD wget -qO- http://localhost:3000/api/health/live || exit 1
 
-CMD ["npx", "tsx", "server.ts"]
+CMD ["node", "dist-server/server.js"]

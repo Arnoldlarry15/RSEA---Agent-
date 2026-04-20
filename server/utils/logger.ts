@@ -23,10 +23,37 @@ if (!fs.existsSync(dataDir)) {
 type LogSubscriber = (entry: LogEntry) => void;
 const subscribers = new Set<LogSubscriber>();
 
+/**
+ * In-memory circular buffer — holds the last MAX_LOG_LINES log entries so
+ * that `getLogs()` can return results without synchronous file I/O on every
+ * call.  The buffer is pre-populated from the log file at module load time
+ * so that logs written in a previous process are immediately available.
+ */
+const _logBuffer: LogEntry[] = [];
+
 export function subscribeToLogs(fn: LogSubscriber): () => void {
   subscribers.add(fn);
   return () => subscribers.delete(fn);
 }
+
+/** Pre-populate the in-memory buffer from any previously written log file. */
+function _loadBufferFromFile(): void {
+  if (!fs.existsSync(LOG_FILE)) return;
+  try {
+    const content = fs.readFileSync(LOG_FILE, 'utf-8');
+    const lines = content.trim().split('\n').filter(Boolean);
+    for (const line of lines) {
+      try {
+        _logBuffer.push(JSON.parse(line));
+      } catch { /* skip malformed lines */ }
+    }
+    // Trim to cap
+    if (_logBuffer.length > MAX_LOG_LINES) {
+      _logBuffer.splice(0, _logBuffer.length - MAX_LOG_LINES);
+    }
+  } catch { /* ignore read errors on startup */ }
+}
+_loadBufferFromFile();
 
 // SEC-7: Use AsyncLocalStorage so trace IDs are scoped to each async call chain
 // and do not bleed between concurrent requests or agent cycles.
@@ -83,6 +110,11 @@ export function _resetLogEventCounter() {
   _logEventCount = 0;
 }
 
+/** Clear the in-memory log buffer. Exposed for testing purposes only. */
+export function _resetLogBuffer() {
+  _logBuffer.length = 0;
+}
+
 export function logEvent(stage: string, data: any, traceId?: string) {
   const verbosity = getVerbosity();
   // In silent mode only critical/error stages are logged to the console
@@ -104,6 +136,12 @@ export function logEvent(stage: string, data: any, traceId?: string) {
     data,
     traceId: traceId ?? getTraceId(),
   };
+
+  // Push to in-memory buffer (maintains circular cap)
+  _logBuffer.push(entry);
+  if (_logBuffer.length > MAX_LOG_LINES) {
+    _logBuffer.shift();
+  }
 
   // Notify real-time subscribers before file I/O
   for (const fn of subscribers) {
@@ -141,21 +179,11 @@ function rotateLogs() {
 }
 
 export function getLogs(): LogEntry[] {
-  if (!fs.existsSync(LOG_FILE)) return [];
-  try {
-    const content = fs.readFileSync(LOG_FILE, 'utf-8');
-    return content.trim().split('\n').filter(Boolean).map(line => {
-      try {
-        return JSON.parse(line);
-      } catch (e) {
-        return null;
-      }
-    }).filter(Boolean) as LogEntry[];
-  } catch (err) {
-    return [];
-  }
+  // Serve from the in-memory circular buffer — avoids synchronous file I/O on
+  // every API call and is always consistent with what was written this session.
+  return [..._logBuffer];
 }
 
 export function getLogsByTraceId(traceId: string): LogEntry[] {
-  return getLogs().filter(e => e.traceId === traceId);
+  return _logBuffer.filter(e => e.traceId === traceId);
 }

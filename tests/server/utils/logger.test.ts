@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 // Import the logger statically — it writes to data/logs.json relative to cwd
-import { logEvent, getLogs, getLogsByTraceId, subscribeToLogs, newTraceId, setTraceId, getTraceId, _resetLogEventCounter } from '../../../server/utils/logger';
+import { logEvent, getLogs, getLogsByTraceId, subscribeToLogs, newTraceId, setTraceId, getTraceId, _resetLogEventCounter, _resetLogBuffer } from '../../../server/utils/logger';
 
 const LOG_FILE = path.join(process.cwd(), 'data', 'logs.json');
 
@@ -17,10 +17,12 @@ describe('Logger', () => {
   beforeEach(() => {
     clearLogFile();
     _resetLogEventCounter();
+    _resetLogBuffer();
   });
 
   afterEach(() => {
     clearLogFile();
+    _resetLogBuffer();
     vi.restoreAllMocks();
   });
 

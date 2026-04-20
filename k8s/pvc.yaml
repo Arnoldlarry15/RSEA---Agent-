@@ -16,5 +16,8 @@ spec:
       # 1 Gi is generous for SQLite + log files in typical operation.
       # Increase if long-term memory or session logs grow significantly.
       storage: 1Gi
-  # Omit storageClassName to use the cluster default; or specify explicitly:
-  # storageClassName: standard
+  # SSD-backed storage class is strongly recommended to avoid SQLite WAL write
+  # latency that would degrade agent cycle times.
+  # GKE: standard-rwo  |  EKS: gp3  |  AKS: managed-premium
+  # Replace with the correct class name for your cloud provider.
+  storageClassName: standard-rwo

@@ -128,8 +128,7 @@ export class Reflector {
         return summary.insight;
       }
     } catch (e) {
-      console.error("Reflection failed", e);
-      logEvent('reflect', { status: 'error', detail: String(e) });
+      logEvent('reflect_error', { status: 'error', detail: String(e) });
     }
 
     // Still update streaks on error so failures aren't silently swallowed.

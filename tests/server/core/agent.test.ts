@@ -14,6 +14,9 @@ const mockRunCycle = vi.fn().mockResolvedValue({
 vi.mock('../../../server/modules/controller', () => {
   class Controller {
     runCycle = mockRunCycle;
+    getStrategy = vi.fn().mockReturnValue({ exploration_rate: 0.2, risk_tolerance: 0.5, tool_preference: {} });
+    getStrategyHistory = vi.fn().mockReturnValue([]);
+    updateStrategy = vi.fn();
   }
   return { Controller };
 });

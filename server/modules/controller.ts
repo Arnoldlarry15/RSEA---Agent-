@@ -11,6 +11,7 @@ import { OutcomeVerifier } from '../core/evaluation/verifier';
 import { PreExecutionRiskGate } from '../core/risk/gate';
 import { RulesEngine } from '../core/rules';
 import { logEvent } from '../utils/logger';
+import { sanitizeContent } from '../utils/sanitize';
 import {
   StrategyConfig,
   MUTABLE_STRATEGY_FIELDS,
@@ -304,16 +305,24 @@ export class Controller {
 
     try {
       const updatedModifiers = await this.llm.generateModifiers(recentContext, this.globalPromptModifiers);
-      if (updatedModifiers) {
-        logEvent('self_modification', {
-          severity: 'CRITICAL',
-          previous: [...this.globalPromptModifiers],
-          updated: updatedModifiers,
-        });
-        this.globalPromptModifiers = updatedModifiers;
+      if (updatedModifiers && Array.isArray(updatedModifiers)) {
+        // Sanitize every modifier string to prevent prompt-injection via a
+        // compromised LLM response from polluting the strategic instruction set.
+        const MAX_MODIFIER_LENGTH = 500;
+        const sanitized = updatedModifiers
+          .map((m: string) => (typeof m === 'string' ? sanitizeContent(m).slice(0, MAX_MODIFIER_LENGTH) : null))
+          .filter((m): m is string => m !== null && m.trim().length > 0);
+        if (sanitized.length > 0) {
+          logEvent('self_modification', {
+            severity: 'CRITICAL',
+            previous: [...this.globalPromptModifiers],
+            updated: sanitized,
+          });
+          this.globalPromptModifiers = sanitized;
+        }
       }
     } catch (e) {
-      console.error("Self-mod failed", e);
+      logEvent('self_modification_error', { error: String(e) });
     }
   }
 

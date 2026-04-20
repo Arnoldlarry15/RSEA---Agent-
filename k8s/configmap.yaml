@@ -11,6 +11,12 @@ data:
   # registration and self-referential links.  Replace with your ingress URL.
   APP_URL: "https://rsea.example.com"
 
+  # ── Proxy ──────────────────────────────────────────────────────────────────
+  # Set to "1" when the pod is behind a cloud load-balancer / ingress so that
+  # Express sets req.ip to the real client address for rate limiting.
+  # Change to a specific CIDR/IP if only a known proxy should be trusted.
+  TRUST_PROXY: "1"
+
   # ── Safety ─────────────────────────────────────────────────────────────────
   # Mainnet-Protocol gate. Set to "false" only when live execution is intended.
   DRY_RUN: "true"
@@ -26,6 +32,15 @@ data:
   RISK_THRESHOLD: "90"
   ACTION_TIMEOUT_MS: "5000"
   CYCLE_TIMEOUT_MS: "30000"
+
+  # ── Fetch / Retry ──────────────────────────────────────────────────────────
+  FETCH_TIMEOUT_MS: "10000"
+  MAX_FETCH_RETRIES: "3"
+
+  # ── Tool allowlists ────────────────────────────────────────────────────────
+  # Comma-separated list of tools permitted by the RulesEngine (empty = all).
+  # Example: RULE_ALLOWED_TOOLS=simulate,http_request,file_read
+  RULE_ALLOWED_TOOLS: ""
 
   # ── LLM provider ───────────────────────────────────────────────────────────
   # Set LLM_PROVIDER to gemini | openai | anthropic | grok | ollama.

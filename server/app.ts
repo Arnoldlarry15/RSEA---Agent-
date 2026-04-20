@@ -17,8 +17,9 @@ import express, { Request } from 'express';
 import { timingSafeEqual } from 'crypto';
 import { getLogs, getLogsByTraceId } from './utils/logger';
 import { ingestWebhookEvent } from './adapters/moltbook';
-import { VERBOSITY, getDecisionAggressiveness, getConfidenceThreshold } from './core/config';
+import { getVerbosity, getDecisionAggressiveness, getConfidenceThreshold } from './core/config';
 import { cycleMetrics } from './core/metrics';
+import { sanitizeContent } from './utils/sanitize';
 import type { AgentLoop } from './core/loop';
 
 export interface CreateAppOptions {
@@ -117,6 +118,17 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
   const COMMAND_RATE_LIMIT = 20;
   const COMMAND_RATE_WINDOW_MS = 60_000;
 
+  // Periodic cleanup: prune entries whose window has expired to prevent unbounded
+  // Map growth under a slow-drip attack from many distinct IPs.
+  const _pruneInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, entry] of commandRateLimitMap) {
+      if (now > entry.resetAt) commandRateLimitMap.delete(ip);
+    }
+  }, 5 * 60_000); // every 5 minutes
+  // Prevent the interval from keeping the process alive (e.g. in tests)
+  if (typeof _pruneInterval.unref === 'function') _pruneInterval.unref();
+
   function getClientIp(req: Request): string {
     return req.ip || req.socket?.remoteAddress || 'unknown';
   }
@@ -147,24 +159,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
       }
       // SEC-4: Sanitize webhook content — strip privileged command tokens before
       // injecting into the agent instruction queue to prevent prompt-injection attacks.
-      // Covers common jailbreak / goal-hijack patterns targeting this agent's capabilities.
-      const INJECTION_PATTERNS: RegExp[] = [
-        /override\s+goal\s*:/gi,
-        /ignore\s+(all\s+)?(previous|prior|above|earlier)\s+instructions?/gi,
-        /forget\s+(your\s+)?(previous\s+)?instructions?/gi,
-        /new\s+(primary\s+)?goal\s*:/gi,
-        /you\s+are\s+now\s+(a|an)\s+/gi,
-        /\bsystem\s*:/gi,
-        /ALLOW_SELF_MODIFICATION/g,
-        /ALLOW_CODE_EVAL/g,
-        /DRY_RUN\s*=\s*false/gi,
-      ];
-      const sanitizedContent = event.content
-        ? INJECTION_PATTERNS.reduce(
-            (s, re) => s.replace(re, '[BLOCKED]'),
-            event.content
-          )
-        : undefined;
+      const sanitizedContent = event.content ? sanitizeContent(event.content) : undefined;
       const instruction = sanitizedContent
         ? `moltbook_event(${event.type}): ${sanitizedContent}`
         : `moltbook_event(${event.type}): ${JSON.stringify(event)}`;
@@ -269,7 +264,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
           longTermCount: Object.keys(agent.getMemory().getSnapshot().longTerm).length
         },
         config: {
-          verbosity: VERBOSITY,
+          verbosity: getVerbosity(),
           decisionAggressiveness: getDecisionAggressiveness(),
           confidenceThreshold: getConfidenceThreshold(),
           dryRun: (process.env.DRY_RUN ?? 'true').toLowerCase() !== 'false',

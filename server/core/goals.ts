@@ -5,8 +5,17 @@ export enum GoalStatus {
   PAUSED = 'PAUSED'
 }
 
+/**
+ * Default primary goal for the agent.
+ * Configurable via the DEFAULT_GOAL environment variable so operators can
+ * adapt the agent to different domains without changing source code.
+ */
+const DEFAULT_PRIMARY_GOAL =
+  process.env.DEFAULT_GOAL ??
+  'Maximize asset acquisition while maintaining absolute capital preservation.';
+
 export class GoalManager {
-  private primaryGoal: string = "Maximize asset acquisition while maintaining absolute capital preservation.";
+  private primaryGoal: string = DEFAULT_PRIMARY_GOAL;
   private activeSubTasks: string[] = [
     "Scan real-time market data for macro anomalies.",
     "Cross-reference decentralized signals with historical success patterns.",

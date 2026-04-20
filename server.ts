@@ -53,6 +53,13 @@ async function startServer() {
       const authHeader = (req.headers['authorization'] ?? '') as string;
       const headerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
       const candidate = tokenParam || headerToken;
+      // AUDIT: ?token= query parameter exposes the secret in server access logs.
+      // Prefer the Authorization header for WebSocket authentication.
+      // The query-param path is deprecated and may be removed in a future version.
+      if (tokenParam && !headerToken) {
+        console.warn('[WS] API secret passed as URL query parameter (?token=). ' +
+          'This exposes the secret in access logs. Use the Authorization: Bearer header instead.');
+      }
       const secretBuf = Buffer.from(secret);
       const candidateBuf = Buffer.from(candidate);
       const authorized =
@@ -134,4 +141,5 @@ async function startServer() {
 
 startServer().catch(err => {
   console.error('Failed to start server:', err);
+  process.exit(1);
 });

@@ -80,6 +80,15 @@ export class Agent {
       if (savedState.activePlan) {
         this.lastActivePlan = savedState.activePlan;
       }
+      // Restore strategy config so accumulated risk_tolerance / exploration_rate
+      // adjustments survive restarts.
+      if (savedState.strategyVersion?.config) {
+        this.controller.updateStrategy(
+          savedState.strategyVersion.config,
+          'restored_from_persistence',
+          0,
+        );
+      }
       logEvent('agent_state_restored', { savedAt: savedState.savedAt });
     }
   }
@@ -170,6 +179,9 @@ export class Agent {
 
     // Persist state so the agent survives restarts
     this.lastActivePlan = cycleData.plan;
+    const currentStrategy = this.controller.getStrategy();
+    const strategyHistory = this.controller.getStrategyHistory();
+    const latestVersion = strategyHistory.length > 0 ? strategyHistory[strategyHistory.length - 1] : null;
     this.persistence.save({
       goals: {
         primary: currentGoals.primary,
@@ -178,7 +190,9 @@ export class Agent {
         successCriteria: this.goals.getSuccessCriteria(),
       },
       activePlan: this.lastActivePlan,
-      strategyVersion: null,
+      strategyVersion: latestVersion
+        ? { version: latestVersion.version, config: currentStrategy }
+        : { version: 'v1', config: currentStrategy },
       savedAt: new Date().toISOString(),
     });
 
