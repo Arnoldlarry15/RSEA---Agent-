@@ -8,6 +8,7 @@ import { MemoryRetriever } from '../memory/retriever';
 import { Observer } from '../core/observation/observer';
 import { Comparator } from '../core/evaluation/comparator';
 import { OutcomeVerifier } from '../core/evaluation/verifier';
+import { PreExecutionRiskGate } from '../core/risk/gate';
 import { logEvent } from '../utils/logger';
 import {
   StrategyConfig,
@@ -39,6 +40,7 @@ export class Controller {
   private observer: Observer;
   private comparator: Comparator;
   private verifier: OutcomeVerifier;
+  private riskGate: PreExecutionRiskGate;
   private llm: LLMInterface;
   private memory: MemorySystem;
 
@@ -74,6 +76,7 @@ export class Controller {
     this.observer = new Observer();
     this.comparator = new Comparator();
     this.verifier = new OutcomeVerifier();
+    this.riskGate = new PreExecutionRiskGate();
 
     // Commit the initial baseline so rollback always has a safe target.
     this.strategyVersioning.commit('initial baseline', 0, this.strategyConfig);
@@ -102,19 +105,24 @@ export class Controller {
     // 4. Act — run parallel tasks concurrently, single-fire for the rest.
     //    Pass tool_preference so the Sniper can select the best-weighted tool when a
     //    task does not specify one explicitly.
+    //
+    //    Phase 9: PreExecutionRiskGate runs BEFORE each Sniper call.  Any task whose
+    //    risk score exceeds the hard block threshold is converted to a blocked result
+    //    immediately — without reaching the Sniper or Executor — so the system
+    //    prevents obvious failures rather than only learning from them afterward.
     const results = [];
     if (rankedTasks.length > 0) {
       const parallelTasks = rankedTasks.filter((t: any) => t.parallelNode === true);
       if (parallelTasks.length > 1) {
-        // Execute all parallel-flagged top tasks concurrently
+        // Execute all parallel-flagged top tasks concurrently — gate each first.
         const parallelResults = await Promise.all(
-          parallelTasks.map((t: any) => this.sniper.executeSurgicalStrike(t, this.strategyConfig.tool_preference))
+          parallelTasks.map((t: any) => this._executeWithRiskGate(t))
         );
         for (const r of parallelResults) results.push(...r);
       } else {
-        // Single-fire: execute only the top-ranked task
+        // Single-fire: execute only the top-ranked task after gating.
         const topTask = rankedTasks[0];
-        const strikeResult = await this.sniper.executeSurgicalStrike(topTask, this.strategyConfig.tool_preference);
+        const strikeResult = await this._executeWithRiskGate(topTask);
         results.push(...strikeResult);
       }
     }
@@ -197,6 +205,37 @@ export class Controller {
     }
 
     return { observations, plan: rankedTasks, results, evaluations };
+  }
+
+  /**
+   * Runs the PreExecutionRiskGate for a task and either delegates to the Sniper
+   * (when the gate allows) or returns a synthetic blocked result (when the gate
+   * rejects) — without involving the Executor at all.
+   */
+  private async _executeWithRiskGate(task: any): Promise<any[]> {
+    const riskAssessment = this.riskGate.assess(task, this.memory, this.strategyConfig);
+    if (!riskAssessment.allowed) {
+      logEvent('risk_gate_blocked', {
+        taskId: task.id,
+        riskScore: riskAssessment.riskScore,
+        reason: riskAssessment.reason,
+        factors: riskAssessment.factors,
+      });
+      return [{
+        status: 'blocked',
+        timestamp: new Date().toISOString(),
+        action: task,
+        outcome: `Pre-execution risk gate: ${riskAssessment.reason}`,
+        priority: 'STANDARD',
+        result: null,
+        success: false,
+        error: riskAssessment.reason,
+        side_effects: [],
+        confidence: 0,
+        riskScore: riskAssessment.riskScore,
+      }];
+    }
+    return this.sniper.executeSurgicalStrike(task, this.strategyConfig.tool_preference);
   }
 
   /**

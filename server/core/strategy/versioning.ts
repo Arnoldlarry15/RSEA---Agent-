@@ -77,4 +77,30 @@ export class StrategyVersioning {
   getHistory(): StrategyVersion[] {
     return [...this.history];
   }
+
+  /**
+   * Returns the version with the highest positive impact score, or null if
+   * no version with positive impact exists.  Useful for finding the best
+   * known configuration to restore when the agent is in recovery mode.
+   */
+  getBestVersion(): StrategyVersion | null {
+    const positiveImpact = this.history.filter((v) => v.impact > 0);
+    if (positiveImpact.length === 0) return null;
+    return positiveImpact.reduce((best, v) => (v.impact > best.impact ? v : best));
+  }
+
+  /**
+   * Returns a trend score for recent strategy evolution.
+   * Positive = the last few versions are improving (net positive impact).
+   * Negative = the last few versions are degrading (net negative impact).
+   * Zero = insufficient history or neutral trend.
+   *
+   * @param window  Number of recent versions to consider (default: 5).
+   */
+  getImprovementTrend(window: number = 5): number {
+    if (this.history.length < 2) return 0;
+    const recent = this.history.slice(-Math.min(window, this.history.length));
+    const totalImpact = recent.reduce((sum, v) => sum + v.impact, 0);
+    return Math.round(totalImpact / recent.length);
+  }
 }

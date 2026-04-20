@@ -39,6 +39,14 @@ export interface AdversarialResult {
   score: AdversarialScore;
   /** Human-readable description of what was stored to memory (null if nothing stored). */
   strategyUpdate: string | null;
+  /**
+   * Disagreement score (0–100) between the Sniper's proposed plan and the
+   * Validator's adversarial challenge.  High disagreement indicates the plan is
+   * contested and should be treated with elevated risk.  This creates genuine
+   * multi-agent tension: the Sniper and Validator are not merely sequential —
+   * they actively compete, and their disagreement is a first-class signal.
+   */
+  disagreementScore: number;
   /** ISO-8601 timestamp of when this round completed. */
   timestamp: string;
 }
@@ -64,6 +72,11 @@ export class RedTeamOrchestrator {
    * Runs the full 5-step adversarial cycle for the given opportunity.
    * Returns a rich result object including scores, attack vectors, and
    * what (if anything) was committed to long-term memory.
+   *
+   * Phase 9: The Validator now acts as a genuine adversary to the Sniper —
+   * it challenges the plan with counter-arguments and produces a disagreement
+   * score.  High disagreement means the plan is contested; the robustness
+   * score is penalised accordingly to create real multi-agent tension.
    */
   async run(opportunity: any): Promise<AdversarialResult> {
     const startTime = Date.now();
@@ -85,11 +98,19 @@ export class RedTeamOrchestrator {
       blockedAttacks,
     });
 
-    // Step 4: Evaluator scores robustness
+    // Step 3b (Phase 9): Validator issues an explicit adversarial challenge — not
+    // just a passive validity check but an active counter-argument against the
+    // Sniper's plan.  The disagreement score measures how strongly the Validator
+    // contests the plan (0 = full agreement, 100 = complete rejection).
+    const disagreementScore = await this.scoreDisagreement(opportunity, plan, attackVectors);
+    logEvent('red_team_disagreement', { roundId, disagreementScore });
+
+    // Step 4: Evaluator scores robustness — penalised when disagreement is high.
     const robustnessScore = await this.scoreRobustness(
       plan,
       attackVectors,
       blockedAttacks,
+      disagreementScore,
     );
     const executionTimeMs = Date.now() - startTime;
 
@@ -124,10 +145,11 @@ export class RedTeamOrchestrator {
       robustnessScore,
       score,
       strategyUpdate,
+      disagreementScore,
       timestamp,
     };
 
-    logEvent('red_team_complete', { roundId, robustnessScore, score });
+    logEvent('red_team_complete', { roundId, robustnessScore, disagreementScore, score });
     return result;
   }
 
@@ -199,13 +221,16 @@ PLAN: ${JSON.stringify(plan).substring(0, 600)}`;
 
   /**
    * Computes a composite robustness score (0-100).
-   * 60% comes from the deterministic attack-block ratio.
-   * 40% comes from the Evaluator's LLM-based opinion (falls back to 50 if LLM is offline).
+   * 50% comes from the deterministic attack-block ratio.
+   * 30% comes from the Evaluator's LLM-based opinion (falls back to 50 if LLM is offline).
+   * 20% is a penalty derived from the disagreement score — high Validator disagreement
+   * reduces the final robustness to reflect genuine multi-agent tension.
    */
   private async scoreRobustness(
     plan: any[],
     attackVectors: string[],
     blockedAttacks: number,
+    disagreementScore: number = 0,
   ): Promise<number> {
     const baseScore =
       attackVectors.length > 0
@@ -224,7 +249,69 @@ PLAN: ${JSON.stringify(plan).substring(0, 600)}`;
     );
     const llmScore = ranked[0]?.score ?? 50;
 
-    return Math.round(baseScore * 0.6 + llmScore * 0.4);
+    // Disagreement penalty: 20% weight on how much the Validator contests the plan.
+    // High disagreement (e.g. 80) penalises robustness by up to 16 points.
+    const disagreementPenalty = (disagreementScore / 100) * 20;
+
+    return Math.max(0, Math.round(baseScore * 0.5 + llmScore * 0.3 - disagreementPenalty));
+  }
+
+  /**
+   * Scores the disagreement between the Sniper's plan and the Validator's
+   * adversarial challenge (0–100: 0 = full agreement, 100 = complete rejection).
+   *
+   * The Validator is asked to score how strongly it contests the proposed plan.
+   * Falls back to a deterministic heuristic when the LLM is offline:
+   *   - If all plan steps are valid → low disagreement (20).
+   *   - If any step is invalid → high disagreement (80).
+   *
+   * This is the core of the multi-agent tension mechanism: the Validator is not
+   * a passive checker but an active adversary with its own score.
+   */
+  private async scoreDisagreement(
+    opportunity: any,
+    plan: any[],
+    attackVectors: string[],
+  ): Promise<number> {
+    // Deterministic fallback: plan validity as a proxy for disagreement.
+    const planIsFullyValid = plan.every(step => this.validator.validate(step).valid);
+    const heuristicScore = planIsFullyValid ? 20 : 80;
+
+    if (!this.llm.healthCheck()) {
+      return heuristicScore;
+    }
+
+    const systemPrompt = `You are the adversarial 'Validator' agent of RSEA.
+Your role is to challenge the Sniper's proposed execution plan — not to approve it.
+Score how strongly you contest the plan from 0 (complete agreement) to 100 (complete rejection).
+Consider: logical flaws, missing contingencies, exploitable weaknesses, over-confidence.
+Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.
+
+OUTPUT PROTOCOL (STRICT JSON):
+{
+  "disagreement_score": <integer 0-100>,
+  "reasons": ["...", "..."]
+}`;
+
+    const userPrompt = `OPPORTUNITY: ${JSON.stringify(opportunity)}
+SNIPER PLAN: ${JSON.stringify(plan).substring(0, 400)}
+KNOWN ATTACK VECTORS: ${JSON.stringify(attackVectors).substring(0, 200)}`;
+
+    try {
+      const result = await this.llm.complete(systemPrompt, userPrompt);
+      const score = result?.disagreement_score;
+      if (typeof score === 'number' && score >= 0 && score <= 100) {
+        logEvent('red_team_validator_challenge', {
+          disagreementScore: score,
+          reasons: result.reasons ?? [],
+        });
+        return Math.round(score);
+      }
+    } catch {
+      // fall through to heuristic
+    }
+
+    return heuristicScore;
   }
 
   /**
