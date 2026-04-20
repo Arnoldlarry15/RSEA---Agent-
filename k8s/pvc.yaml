@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rsea-data-pvc
+  namespace: rsea
+  labels:
+    app: rsea-agent
+spec:
+  accessModes:
+    # ReadWriteOnce is required — only one pod may mount this volume at a time.
+    # This enforces the single-replica constraint: SQLite does not tolerate
+    # concurrent write access from multiple pods.
+    - ReadWriteOnce
+  resources:
+    requests:
+      # 1 Gi is generous for SQLite + log files in typical operation.
+      # Increase if long-term memory or session logs grow significantly.
+      storage: 1Gi
+  # Omit storageClassName to use the cluster default; or specify explicitly:
+  # storageClassName: standard

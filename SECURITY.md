@@ -30,6 +30,7 @@ You can expect an acknowledgement within **72 hours** and a patch timeline withi
 | `ALLOW_SELF_MODIFICATION` | `false` | Set `ALLOW_SELF_MODIFICATION=true` + `DRY_RUN=false` to enable LLM self-modification |
 | `API_SECRET` | unset (dev) | **Required** in `NODE_ENV=production`; server exits on startup if missing |
 | Rate limiting | 20 req/min/IP | Applies to `POST /api/command` and `POST /api/control` |
+| WebSocket token | `Authorization: Bearer` header OR `?token=` query param | Prefer header auth; the `?token=` method exposes the secret in server access logs |
 
 ## Deployment Checklist
 
@@ -40,3 +41,5 @@ You can expect an acknowledgement within **72 hours** and a patch timeline withi
 - [ ] `MOLTBOOK_WEBHOOK_SECRET` is set if `MOLTBOOK_API_URL` is configured
 - [ ] The `data/` directory is mounted as a persistent volume (never committed to git)
 - [ ] The container runs as the non-root `rsea` user (enforced by the Dockerfile)
+- [ ] The SQLite database (`data/memory.db`) is backed up regularly (see `docs/runbook.md`)
+- [ ] For Kubernetes deployments: `API_SECRET` and other credentials are stored as Kubernetes Secrets, not ConfigMaps

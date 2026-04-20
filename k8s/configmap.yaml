@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rsea-config
+  namespace: rsea
+  labels:
+    app: rsea-agent
+data:
+  # ── Network ────────────────────────────────────────────────────────────────
+  # Public URL of this service (no trailing slash).  Used for Moltbook webhook
+  # registration and self-referential links.  Replace with your ingress URL.
+  APP_URL: "https://rsea.example.com"
+
+  # ── Safety ─────────────────────────────────────────────────────────────────
+  # Mainnet-Protocol gate. Set to "false" only when live execution is intended.
+  DRY_RUN: "true"
+
+  ALLOW_CODE_EVAL: "false"
+  ALLOW_SELF_MODIFICATION: "false"
+
+  # ── Behaviour tuning ───────────────────────────────────────────────────────
+  VERBOSITY_LEVEL: "normal"
+  CONFIDENCE_THRESHOLD: "60"
+  DECISION_AGGRESSIVENESS: "0.5"
+  MAX_ACTIONS_PER_CYCLE: "10"
+  RISK_THRESHOLD: "90"
+  ACTION_TIMEOUT_MS: "5000"
+  CYCLE_TIMEOUT_MS: "30000"
+
+  # ── LLM provider ───────────────────────────────────────────────────────────
+  # Set LLM_PROVIDER to gemini | openai | anthropic | grok | ollama.
+  # Leave unset for auto-detection from whichever API key is present.
+  LLM_PROVIDER: ""
