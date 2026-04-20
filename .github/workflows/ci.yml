@@ -36,6 +36,9 @@ jobs:
       - name: Lint (type-check)
         run: npm run lint
 
+      - name: Lint (ESLint — TypeScript rules)
+        run: npm run lint:eslint
+
       - name: Run tests with coverage
         run: npm run test:coverage
         env:

@@ -1,0 +1,149 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rsea-agent
+  namespace: rsea
+  labels:
+    app: rsea-agent
+spec:
+  # Single replica only — SQLite does not support concurrent write access from
+  # multiple pods sharing the same PVC.  See docs/runbook.md for scaling notes.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rsea-agent
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable: 0 ensures the old pod stays alive until the new one is
+      # ready. See the runbook for the recommended pre-rotation kill-switch step.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: rsea-agent
+    spec:
+      # Run as the non-root user defined in the Dockerfile (uid 1001)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+
+      containers:
+        - name: rsea-agent
+          # Replace with your actual container registry and a specific version tag
+          # or commit SHA.  Using `latest` is discouraged in production because it
+          # makes deployments non-deterministic.
+          # Examples:
+          #   image: your-registry.io/rsea-agent:0.1.0
+          #   image: your-registry.io/rsea-agent:sha-abc123
+          image: your-registry.io/rsea-agent:0.1.0
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+            # Load sensitive values from Kubernetes Secrets
+            - name: API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: rsea-secret
+                  key: API_SECRET
+            # Optional LLM provider key — set whichever provider you use
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rsea-secret
+                  key: GEMINI_API_KEY
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rsea-secret
+                  key: OPENAI_API_KEY
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rsea-secret
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            # Non-sensitive config from a ConfigMap
+            - name: APP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: rsea-config
+                  key: APP_URL
+            - name: DRY_RUN
+              valueFrom:
+                configMapKeyRef:
+                  name: rsea-config
+                  key: DRY_RUN
+            - name: VERBOSITY_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: rsea-config
+                  key: VERBOSITY_LEVEL
+            - name: CONFIDENCE_THRESHOLD
+              valueFrom:
+                configMapKeyRef:
+                  name: rsea-config
+                  key: CONFIDENCE_THRESHOLD
+
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+
+          # Liveness probe — restart the container if the process hangs
+          livenessProbe:
+            httpGet:
+              path: /api/health/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Readiness probe — remove the pod from the Service endpoints while
+          # the DB or LLM subsystem is unavailable
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 2
+
+          # Startup probe — gives the app 90 s to finish initialising on first boot
+          # (sqlite-vec native module load + DB init) before liveness kicks in
+          startupProbe:
+            httpGet:
+              path: /api/health/live
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 18
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: rsea-data-pvc
+
+      # Graceful termination — the app listens for SIGTERM and shuts down cleanly
+      terminationGracePeriodSeconds: 30

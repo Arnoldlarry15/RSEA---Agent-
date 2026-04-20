@@ -203,6 +203,38 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
     }
   });
 
+  /**
+   * GET /api/health/live — Kubernetes liveness probe.
+   *
+   * Returns 200 as long as the process is running and the HTTP server is
+   * accepting requests.  A liveness failure causes the orchestrator to restart
+   * the container.  This probe intentionally does NOT check DB connectivity —
+   * a temporary DB hiccup should not restart the container.
+   */
+  app.get('/api/health/live', (_req, res) => {
+    res.status(200).json({ status: 'alive', uptime: process.uptime() });
+  });
+
+  /**
+   * GET /api/health/ready — Kubernetes readiness probe.
+   *
+   * Returns 200 only when all critical subsystems (DB, ideally LLM) are
+   * operational.  A readiness failure causes the orchestrator to stop routing
+   * traffic to this pod without restarting it.
+   */
+  app.get('/api/health/ready', (_req, res) => {
+    try {
+      const health = agentLoop.getAgent().checkHealth();
+      if (health.status === 'healthy') {
+        res.status(200).json({ status: 'ready', components: health.components });
+      } else {
+        res.status(503).json({ status: 'not_ready', components: health.components });
+      }
+    } catch (err) {
+      res.status(503).json({ status: 'not_ready', error: 'Health check failed' });
+    }
+  });
+
   app.get('/api/logs', requireAuth, (req, res) => {
     try {
       const { traceId } = req.query;
@@ -266,6 +298,57 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
       res.json(cycleMetrics.getSummary());
     } catch (err) {
       res.status(500).json({ error: 'Failed to fetch metrics' });
+    }
+  });
+
+  /**
+   * GET /api/metrics/prometheus — Prometheus text format metrics scrape endpoint.
+   *
+   * Exposes the same data as /api/metrics but in the standard Prometheus
+   * exposition format so it can be scraped directly by Prometheus, Grafana
+   * Agent, or any OpenMetrics-compatible collector without a custom adapter.
+   *
+   * Protected by requireAuth so internal performance data is not public.
+   */
+  app.get('/api/metrics/prometheus', requireAuth, (_req, res) => {
+    try {
+      const m = cycleMetrics.getSummary();
+      const lines: string[] = [];
+
+      const g = (name: string, help: string, type: string, value: number, labels = '') => {
+        lines.push(`# HELP ${name} ${help}`);
+        lines.push(`# TYPE ${name} ${type}`);
+        lines.push(labels ? `${name}{${labels}} ${value}` : `${name} ${value}`);
+      };
+
+      g('rsea_cycles_total',         'Total number of agent cycles recorded in the current window', 'gauge',   m.totalCycles);
+      g('rsea_evaluations_total',     'Total evaluation records across all recorded cycles',         'gauge',   m.totalEvaluations);
+      g('rsea_success_rate_percent',  'Overall evaluation success rate (0–100)',                     'gauge',   m.overallSuccessRate);
+      g('rsea_risk_gate_blocks_total','Total PreExecutionRiskGate hard-blocks in the current window','gauge',   m.riskGateBlocks);
+      g('rsea_score_avg',             'Average comparator score across recent cycles (0–100)',        'gauge',   m.scoreDistribution.avg);
+      g('rsea_score_min',             'Minimum comparator score observed in recent cycles (0–100)',   'gauge',   m.scoreDistribution.min);
+      g('rsea_score_max',             'Maximum comparator score observed in recent cycles (0–100)',   'gauge',   m.scoreDistribution.max);
+      g('rsea_score_p50',             'Median (p50) comparator score across recent cycles (0–100)',   'gauge',   m.scoreDistribution.p50);
+
+      lines.push('# HELP rsea_tool_successes_total Per-tool success count in the current window');
+      lines.push('# TYPE rsea_tool_successes_total gauge');
+      for (const [tool, stats] of Object.entries(m.toolOutcomes)) {
+        const safe = tool.replace(/[^a-zA-Z0-9_]/g, '_');
+        lines.push(`rsea_tool_successes_total{tool="${safe}"} ${stats.success}`);
+      }
+
+      lines.push('# HELP rsea_tool_failures_total Per-tool failure count in the current window');
+      lines.push('# TYPE rsea_tool_failures_total gauge');
+      for (const [tool, stats] of Object.entries(m.toolOutcomes)) {
+        const safe = tool.replace(/[^a-zA-Z0-9_]/g, '_');
+        lines.push(`rsea_tool_failures_total{tool="${safe}"} ${stats.failure}`);
+      }
+
+      lines.push('');
+      res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+      res.send(lines.join('\n'));
+    } catch (err) {
+      res.status(500).send('# Error generating metrics\n');
     }
   });
 

@@ -12,7 +12,11 @@ RUN npm run build
 FROM node:22-alpine
 WORKDIR /app
 
-# Install production dependencies only (tsx is in dependencies, so included here)
+# Install production dependencies only.
+# NOTE: `tsx` remains in `dependencies` so it is available here to run the
+# TypeScript server source directly.  A future improvement is to compile the
+# server to JavaScript (`tsc -p tsconfig.server.json`) and replace the CMD
+# below with `node dist-server/server.js`, removing the tsx runtime dependency.
 COPY package*.json ./
 RUN npm ci --omit=dev
 
@@ -36,8 +40,10 @@ USER rsea
 ENV NODE_ENV=production
 EXPOSE 3000
 
-# DEPLOY-3: Health check using the /api/health endpoint
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:3000/api/health || exit 1
+# DEPLOY-3: Use the liveness probe endpoint for the Docker health check.
+# Kubernetes deployments should additionally configure the readiness probe
+# at /api/health/ready — see k8s/deployment.yaml for the full probe config.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- http://localhost:3000/api/health/live || exit 1
 
 CMD ["npx", "tsx", "server.ts"]

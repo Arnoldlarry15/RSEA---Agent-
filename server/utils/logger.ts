@@ -118,23 +118,26 @@ export function logEvent(stage: string, data: any, traceId?: string) {
   }
 
   // Rotation is expensive (read + rewrite entire file); only run every 100 events.
+  // Deferred via setImmediate so it does not block the event loop on the hot
+  // logging path — the rotation I/O happens after the current call stack unwinds.
   _logEventCount++;
   if (_logEventCount % 100 === 0) {
-    rotateLogs();
+    setImmediate(rotateLogs);
   }
 }
 
 function rotateLogs() {
-  try {
-    const content = fs.readFileSync(LOG_FILE, 'utf-8');
+  // Async read-then-rewrite so neither the read nor the write stalls the event loop.
+  fs.readFile(LOG_FILE, 'utf-8', (readErr, content) => {
+    if (readErr) { console.error('Log rotation read failed:', readErr); return; }
     const lines = content.trim().split('\n').filter(Boolean);
     if (lines.length > MAX_LOG_LINES) {
       const trimmed = lines.slice(lines.length - MAX_LOG_LINES).join('\n') + '\n';
-      fs.writeFileSync(LOG_FILE, trimmed);
+      fs.writeFile(LOG_FILE, trimmed, (writeErr) => {
+        if (writeErr) console.error('Log rotation write failed:', writeErr);
+      });
     }
-  } catch (e) {
-    console.error('Log rotation failed:', e);
-  }
+  });
 }
 
 export function getLogs(): LogEntry[] {

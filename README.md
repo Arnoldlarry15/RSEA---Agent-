@@ -91,9 +91,13 @@ Key environment variables (see `.env.example` for the full list):
 |--------|-------|------|-------------|
 | GET | `/api/status` | — | Framework version, uptime, and current goals |
 | GET | `/api/health` | — | Health check for DB and LLM connections |
+| GET | `/api/health/live` | — | Kubernetes **liveness** probe — 200 while the process is running |
+| GET | `/api/health/ready` | — | Kubernetes **readiness** probe — 200 when DB + LLM are operational |
 | GET | `/api/logs` | required | Last 100 agent log events (REST fallback) |
 | GET | `/api/memory` | required | Full memory snapshot (short-term + long-term) |
 | GET | `/api/debug/state` | required | Loop telemetry, goal state, memory stats, and config (dryRun, killSwitch) |
+| GET | `/api/metrics` | required | Operational metrics as JSON (cycle stats, score distribution, tool outcomes) |
+| GET | `/api/metrics/prometheus` | required | Same metrics in **Prometheus text format** for Grafana / scraping |
 | POST | `/api/command` | required | Queue a manual instruction for the agent (rate-limited: 20 req/min/IP) |
 | POST | `/api/control` | required | `start` / `stop` the loop, or `set_interval` (ms) |
 | WS | `/ws/logs` | required | Real-time log stream (sends `history` on connect, `log` on each new event) |
@@ -104,6 +108,7 @@ Key environment variables (see `.env.example` for the full list):
 - **SSRF protection** is enforced on all outbound HTTP requests (executor `api_fetch` and `http_request`, Spotter `SIGNAL_FEED_URL`). Requests to private/loopback addresses and non-HTTP(S) schemes are blocked.
 - **Rate limiting** on `POST /api/command`: max 20 requests per IP per minute.
 - All authenticated endpoints require `Authorization: Bearer <API_SECRET>`.
+- **WebSocket authentication**: `/ws/logs` accepts the API token via the `Authorization: Bearer` header *or* as a `?token=` URL query parameter for browser clients. Note that the query-parameter method may expose the token in server access logs — prefer header-based auth where possible.
 - **Security response headers** (`X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`, `Content-Security-Policy`) are applied to every response.
 - **`ToolValidator`** zero-trust gate: every LLM-generated action is validated against a tool whitelist and required payload parameters before it reaches the Executor.
 - **`RulesEngine.validate()`** hard constraint gate: enforces cycle action limits, tool allowlists, risk thresholds, and timeout caps on every action in the Executor.
@@ -116,6 +121,7 @@ Key environment variables (see `.env.example` for the full list):
 | `npm run build` | Build the React frontend for production |
 | `npm run preview` | Preview the production build |
 | `npm run lint` | TypeScript type-check (no emit) |
+| `npm run lint:eslint` | ESLint static analysis (TypeScript rules) |
 | `npm run test` | Run all tests |
 | `npm run test:coverage` | Run tests with coverage report |
 

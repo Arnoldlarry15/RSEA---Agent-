@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rsea-agent
+  namespace: rsea
+  labels:
+    app: rsea-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: rsea-agent
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

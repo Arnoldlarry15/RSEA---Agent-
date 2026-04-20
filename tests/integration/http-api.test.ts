@@ -213,6 +213,22 @@ describe('HTTP API — end-to-end', () => {
     expect(json.status).toBe('healthy');
   });
 
+  it('8a. GET /api/health/live — public liveness probe, returns 200 with uptime', async () => {
+    const res = await get('/api/health/live');
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('alive');
+    expect(typeof json.uptime).toBe('number');
+  });
+
+  it('8b. GET /api/health/ready — public readiness probe, returns 200 when healthy', async () => {
+    const res = await get('/api/health/ready');
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('ready');
+    expect(json.components).toBeDefined();
+  });
+
   it('9. GET /api/status — public, returns framework name and goals', async () => {
     const res = await get('/api/status');
     expect(res.status).toBe(200);
@@ -259,6 +275,36 @@ describe('HTTP API — end-to-end', () => {
     expect(json.overallSuccessRate).toBe(50);
     expect(json.riskGateBlocks).toBe(1);
     expect(json.toolOutcomes.simulate).toMatchObject({ success: 1, failure: 1, successRate: 50 });
+  });
+
+  // ── GET /api/metrics/prometheus ────────────────────────────────────────────
+
+  it('11c. GET /api/metrics/prometheus returns 401 when API_SECRET is set and no token', async () => {
+    process.env.API_SECRET = 'prom-secret';
+    try {
+      const res = await get('/api/metrics/prometheus');
+      expect(res.status).toBe(401);
+    } finally {
+      delete process.env.API_SECRET;
+    }
+  });
+
+  it('11d. GET /api/metrics/prometheus returns Prometheus text format', async () => {
+    cycleMetrics.record(
+      [{ tool: 'simulate', evaluation: { success: true, score: 85 } }],
+      0,
+    );
+    const res = await get('/api/metrics/prometheus');
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    // Must contain standard Prometheus HELP / TYPE / metric lines
+    expect(text).toContain('# HELP rsea_cycles_total');
+    expect(text).toContain('# TYPE rsea_cycles_total gauge');
+    expect(text).toContain('rsea_cycles_total 1');
+    expect(text).toContain('rsea_success_rate_percent');
+    expect(text).toContain('rsea_tool_successes_total{tool="simulate"}');
+    // Content-Type must be the Prometheus text format
+    expect(res.headers.get('content-type')).toMatch(/text\/plain/);
   });
 
   // ── Security headers ───────────────────────────────────────────────────────
