@@ -78,6 +78,8 @@ function makeMockMemory(): Partial<MemorySystem> {
   return {
     getSnapshot: vi.fn().mockReturnValue({ shortTerm: [], longTerm: {} }),
     addEvent: vi.fn(),
+    getRecentContext: vi.fn().mockReturnValue([]),
+    recall: vi.fn().mockReturnValue(null),
   };
 }
 

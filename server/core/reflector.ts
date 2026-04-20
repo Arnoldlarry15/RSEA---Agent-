@@ -3,6 +3,7 @@ import { MemorySystem } from './memory';
 import { GoalManager } from './goals';
 import { logEvent } from '../utils/logger';
 import type { StrategyConfig } from './strategy/config';
+import { REFLECTOR_BANS_KEY } from './risk/gate';
 
 /** Callback invoked by the Reflector when it decides to adjust the active strategy. */
 export type StrategyUpdateCallback = (
@@ -143,6 +144,13 @@ export class Reflector {
    * This gives the Reflector real teeth: it does not merely observe outcomes —
    * after sustained failure it actively penalises the active strategy, and after
    * sustained success it opens up the exploration budget.
+   *
+   * Authority extension (Phase 9): when the failure streak fires, the Reflector
+   * also writes the failing tool names to memory under REFLECTOR_BANS_KEY so
+   * the PreExecutionRiskGate and Planner can enforce hard avoidance.
+   * Additionally, a score of exactly 0 on every evaluation triggers an
+   * immediate (no-streak) strategy downgrade to prevent the system from
+   * continuing down an obviously broken path.
    */
   private _updateStrategyStreaks(evaluations: any[] | undefined): void {
     if (!evaluations || evaluations.length === 0 || !this.onStrategyUpdate || !this.getStrategy) {
@@ -156,6 +164,23 @@ export class Reflector {
     if (scores.length === 0) return;
 
     const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+
+    // ── Immediate downgrade on total failure (all scores = 0) ────────────────
+    const allZero = scores.every((s) => s === 0);
+    if (allZero) {
+      const current = this.getStrategy();
+      const newRiskTolerance = Math.max(0.1, current.risk_tolerance - 0.15);
+      this.onStrategyUpdate(
+        { risk_tolerance: newRiskTolerance },
+        `Reflection authority: total failure — all cycle scores are 0 (immediate downgrade)`,
+        -100,
+      );
+      logEvent('reflect_strategy_immediate_downgrade', { avgScore, newRiskTolerance });
+      this._banFailingTools(evaluations);
+      this.failureStreak = 0;
+      this.successStreak = 0;
+      return;
+    }
 
     if (avgScore < Reflector.POOR_SCORE_THRESHOLD) {
       this.failureStreak++;
@@ -175,6 +200,8 @@ export class Reflector {
           avgScore,
           newRiskTolerance,
         });
+        // Write tool bans to memory so the PreExecutionRiskGate can enforce them.
+        this._banFailingTools(evaluations);
         this.failureStreak = 0;
       }
     } else if (avgScore > Reflector.STRONG_SCORE_THRESHOLD) {
@@ -202,5 +229,28 @@ export class Reflector {
       this.failureStreak = 0;
       this.successStreak = 0;
     }
+  }
+
+  /**
+   * Extracts tool names from failing evaluations and appends them to the
+   * REFLECTOR_BANS long-term memory entry so the PreExecutionRiskGate and
+   * Planner can suppress these tools in future cycles.
+   *
+   * Bans accumulate across cycles (deduplication prevents unbounded growth).
+   * Each ban is stored with elevated importance (1.8) so memory decay does not
+   * erode it quickly.
+   */
+  private _banFailingTools(evaluations: any[]): void {
+    const failingTools = evaluations
+      .filter((ev) => ev?.evaluation?.success === false || (ev?.evaluation?.score ?? 100) < Reflector.POOR_SCORE_THRESHOLD)
+      .map((ev) => ev?.action?.tool ?? ev?.observation?.actual_outcome ?? null)
+      .filter((t): t is string => typeof t === 'string' && t.length > 0);
+
+    if (failingTools.length === 0) return;
+
+    const existing: string[] = this.memory.recall(REFLECTOR_BANS_KEY) ?? [];
+    const merged = Array.from(new Set([...existing, ...failingTools]));
+    this.memory.remember(REFLECTOR_BANS_KEY, merged, undefined, 1.8);
+    logEvent('reflect_ban_tools', { bannedTools: merged, newlyBanned: failingTools });
   }
 }

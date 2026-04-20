@@ -1,6 +1,7 @@
 import { LLMInterface } from '../cognition/llm';
 import { MemorySystem } from '../core/memory';
 import { MemoryRetriever } from '../memory/retriever';
+import { REFLECTOR_BANS_KEY } from '../core/risk/gate';
 
 export interface Plan {
   id: string;
@@ -75,9 +76,19 @@ export class Planner {
       return fallbackPlan('Simulated atomic task');
     }
 
+    // ── Memory dominance: banned tools / action patterns ─────────────────────
+    // The Reflector writes tool bans to long-term memory after sustained failure.
+    // Injecting them as HARD CONSTRAINTS prevents the LLM from proposing plans
+    // that include already-failed patterns — memory overrides creativity here.
+    const bannedTools: string[] = this.memory.recall(REFLECTOR_BANS_KEY) ?? [];
+    const bannedConstraint =
+      bannedTools.length > 0
+        ? `\n\nHARD CONSTRAINTS (enforced by memory — DO NOT violate):\n- NEVER generate tasks that use or reference these banned tools/patterns: ${bannedTools.join(', ')}.`
+        : '';
+
     const systemPrompt = `You are the 'Planner' agent of RSEA.
 Decompose the given objective into a minimal task tree. Allow for parallel attempts where useful.
-Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.
+Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.${bannedConstraint}
 
 OUTPUT PROTOCOL (STRICT JSON):
 {

@@ -20,6 +20,7 @@ function makeMockMemory(): Partial<MemorySystem> {
   return {
     remember: vi.fn() as any,
     addEvent: vi.fn() as any,
+    recall: vi.fn().mockReturnValue(null) as any,
   };
 }
 
@@ -283,6 +284,78 @@ describe('Reflector', () => {
 
       const [updates] = onStrategyUpdate.mock.calls[0];
       expect(updates.exploration_rate).toBeLessThanOrEqual(1.0);
+    });
+  });
+
+  // ── Phase 9: Reflection ban authority ──────────────────────────────────────
+
+  describe('ban authority', () => {
+    const defaultStrategy: StrategyConfig = {
+      exploration_rate: 0.2,
+      risk_tolerance: 0.5,
+      tool_preference: {},
+    };
+
+    it('writes REFLECTOR_BANS to memory when failure streak fires', async () => {
+      const llm = makeMockLLM({ insight: 'insight' });
+      const memory = makeMockMemory();
+      const onStrategyUpdate = vi.fn();
+      const getStrategy = vi.fn().mockReturnValue({ ...defaultStrategy });
+      const reflector = new Reflector(llm as any, memory as any, null, onStrategyUpdate, getStrategy);
+
+      const poorEvals = [
+        { evaluation: { score: 10, success: false }, action: { tool: 'simulate' }, observation: {} },
+        { evaluation: { score: 5, success: false }, action: { tool: 'api_fetch' }, observation: {} },
+      ];
+      const criticalResult = [{ priority: 'CRITICAL', outcome: 'bad', status: 'executed' }];
+
+      // Two cycles of poor performance → streak fires → bans should be stored
+      await reflector.reflect([], [], [], criticalResult, poorEvals);
+      await reflector.reflect([], [], [], criticalResult, poorEvals);
+
+      // memory.remember should have been called with REFLECTOR_BANS_KEY
+      const rememberCalls = (memory.remember as any).mock.calls;
+      const banCall = rememberCalls.find(([key]: [string]) => key === 'REFLECTOR_BANS');
+      expect(banCall).toBeDefined();
+      // The value should be an array containing the failing tools
+      const bannedList = banCall[1];
+      expect(Array.isArray(bannedList)).toBe(true);
+    });
+
+    it('fires an immediate strategy downgrade when all scores are 0', async () => {
+      const llm = makeMockLLM({ insight: 'insight' });
+      const memory = makeMockMemory();
+      const onStrategyUpdate = vi.fn();
+      const getStrategy = vi.fn().mockReturnValue({ ...defaultStrategy });
+      const reflector = new Reflector(llm as any, memory as any, null, onStrategyUpdate, getStrategy);
+
+      // All scores = 0 → immediate downgrade, no streak required
+      const zeroEvals = [{ evaluation: { score: 0, success: false }, action: { tool: 'simulate' }, observation: {} }];
+      const criticalResult = [{ priority: 'CRITICAL', outcome: 'total failure', status: 'executed' }];
+
+      await reflector.reflect([], [], [], criticalResult, zeroEvals);
+
+      expect(onStrategyUpdate).toHaveBeenCalledTimes(1);
+      const [updates, change, impact] = onStrategyUpdate.mock.calls[0];
+      expect(updates.risk_tolerance).toBeLessThan(defaultStrategy.risk_tolerance);
+      expect(change).toContain('total failure');
+      expect(impact).toBe(-100);
+    });
+
+    it('does not fire immediate downgrade when scores are non-zero', async () => {
+      const llm = makeMockLLM({ insight: 'insight' });
+      const memory = makeMockMemory();
+      const onStrategyUpdate = vi.fn();
+      const getStrategy = vi.fn().mockReturnValue({ ...defaultStrategy });
+      const reflector = new Reflector(llm as any, memory as any, null, onStrategyUpdate, getStrategy);
+
+      // Scores = 10 (non-zero poor) → should NOT fire immediately, needs streak
+      const poorEvals = [{ evaluation: { score: 10, success: false }, action: { tool: 'simulate' }, observation: {} }];
+      const criticalResult = [{ priority: 'CRITICAL', outcome: 'bad', status: 'executed' }];
+
+      await reflector.reflect([], [], [], criticalResult, poorEvals);
+
+      expect(onStrategyUpdate).not.toHaveBeenCalled();
     });
   });
 });
