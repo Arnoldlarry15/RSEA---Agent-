@@ -18,6 +18,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { timingSafeEqual } from 'crypto';
 import { logEvent } from '../utils/logger';
 
 const BASE_URL = (process.env.MOLTBOOK_API_URL ?? '').replace(/\/$/, '');
@@ -210,11 +211,20 @@ export function ingestWebhookEvent(
   rawBody: string,
   secretHeader?: string
 ): MoltbookWebhookEvent | null {
-  // Optional secret validation
+  // Optional secret validation — use timing-safe comparison to prevent
+  // timing side-channel attacks against the webhook secret value (P2 fix).
   const expectedSecret = process.env.MOLTBOOK_WEBHOOK_SECRET;
-  if (expectedSecret && secretHeader !== expectedSecret) {
-    logEvent('moltbook_webhook_rejected', { reason: 'invalid_secret' });
-    return null;
+  if (expectedSecret) {
+    if (!secretHeader) {
+      logEvent('moltbook_webhook_rejected', { reason: 'invalid_secret' });
+      return null;
+    }
+    const headerBuf = Buffer.from(secretHeader);
+    const expectedBuf = Buffer.from(expectedSecret);
+    if (headerBuf.length !== expectedBuf.length || !timingSafeEqual(headerBuf, expectedBuf)) {
+      logEvent('moltbook_webhook_rejected', { reason: 'invalid_secret' });
+      return null;
+    }
   }
 
   let event: MoltbookWebhookEvent;

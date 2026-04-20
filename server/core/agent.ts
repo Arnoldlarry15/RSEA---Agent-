@@ -13,6 +13,7 @@ import { MemoryRetriever } from '../memory/retriever';
 import { PatternExtractor } from '../memory/patterns';
 import { runtimeEvents } from './runtime/events';
 import { AgentStatePersistence } from './runtime/persistence';
+import { cycleMetrics } from './metrics';
 
 export class Agent {
   private llm: LLMInterface;
@@ -139,6 +140,14 @@ export class Agent {
     this.currentState = AgentState.EVALUATING;
     this.memory.addEvent({ type: 'orchestrated_cycle', data: cycleData, instructions });
     logEvent('think_and_act', { cycleData, instructions });
+
+    // Record per-cycle metrics for the /api/metrics observability endpoint.
+    // Risk gate blocks are results with status='blocked' produced by
+    // PreExecutionRiskGate before the Sniper fires.
+    const riskGateBlocks = (cycleData.results as any[]).filter(
+      (r: any) => r.status === 'blocked',
+    ).length;
+    cycleMetrics.record(cycleData.evaluations ?? [], riskGateBlocks);
 
     // Goal completion is driven by explicit markCompleted() calls (e.g. from external signals
     // or future criteria checks) — not by fragile outcome-string matching.
