@@ -11,10 +11,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Executor } from '../../../server/modules/executor';
+import { Executor } from '../../server/modules/executor';
 
-vi.mock('../../../server/utils/logger', () => ({ logEvent: vi.fn() }));
-vi.mock('../../../server/adapters/moltbook', () => ({
+vi.mock('../../server/utils/logger', () => ({ logEvent: vi.fn() }));
+vi.mock('../../server/adapters/moltbook', () => ({
   sendMessage: vi.fn().mockResolvedValue({ id: 'msg1', ok: true }),
   fetchThread: vi.fn().mockResolvedValue({ messages: [] }),
 }));

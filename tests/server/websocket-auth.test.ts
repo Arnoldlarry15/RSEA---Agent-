@@ -17,10 +17,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { timingSafeEqual } from 'crypto';
-import { getLogs, _resetLogBuffer } from '../../../server/utils/logger';
+import { getLogs, _resetLogBuffer } from '../../server/utils/logger';
 
-vi.mock('../../../server/utils/logger', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../server/utils/logger')>();
+vi.mock('../../server/utils/logger', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../server/utils/logger')>();
   return { ...actual, logEvent: vi.fn() };
 });
 
