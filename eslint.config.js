@@ -21,7 +21,11 @@ export default tseslint.config(
       '@typescript-eslint/no-require-imports': 'error',
 
       // Disallow unused variables (except those prefixed with `_`)
-      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': ['warn', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+      }],
 
       // Consistent use of `===` over `==`
       'eqeqeq': ['error', 'always', { null: 'ignore' }],

@@ -36,7 +36,7 @@ STRATEGIES: ${JSON.stringify(strategies)}`;
         }).sort((a: any, b: any) => b.score - a.score);
       }
       return strategies;
-    } catch (err) {
+    } catch (_err) {
       return strategies;
     }
   }

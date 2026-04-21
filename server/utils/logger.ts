@@ -147,11 +147,11 @@ export function getLogs(): LogEntry[] {
     return content.trim().split('\n').filter(Boolean).map(line => {
       try {
         return JSON.parse(line);
-      } catch (e) {
+      } catch (_e) {
         return null;
       }
     }).filter(Boolean) as LogEntry[];
-  } catch (err) {
+  } catch (_err) {
     return [];
   }
 }

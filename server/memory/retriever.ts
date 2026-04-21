@@ -27,7 +27,7 @@ export class MemoryRetriever {
    * Returns a blend of recent episodic events, semantic insights,
    * and stored strategic patterns.
    */
-  retrieve(goal: string, context: any[]): RelevantMemory[] {
+  retrieve(_goal: string, _context: unknown[]): RelevantMemory[] {
     const memories: RelevantMemory[] = [];
 
     // Recent episodic events give the planner awareness of what just happened.

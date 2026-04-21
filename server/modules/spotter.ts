@@ -71,7 +71,7 @@ export class Spotter {
       const btcRes = await spotterFetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
       const btcData = await btcRes.json();
       btcPrice = btcData.price;
-    } catch (err) {
+    } catch (_err) {
       console.warn("Failed to fetch BTC price from Binance, using simulated data only.");
     }
 
@@ -98,7 +98,7 @@ export class Spotter {
         source: 'CoinGecko_API',
         timestamp: now
       };
-    } catch (err) {
+    } catch (_err) {
       console.warn("Failed to fetch ETH data from CoinGecko, using simulated signal.");
     }
 
