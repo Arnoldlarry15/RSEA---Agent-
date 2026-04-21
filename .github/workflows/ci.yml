@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# Pinned Trivy version — updated weekly by the trivy-update.yml workflow.
+# Bump this value to resolve a staleness-guard failure in the container-scan job.
+env:
+  TRIVY_VERSION: "0.70.0"
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -46,3 +51,80 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+  container-scan:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    # Never allow this job to be skipped or to pass silently — it must always
+    # run and always produce a definitive pass/fail verdict on the image.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Build Docker image
+        run: docker build -t rsea-agent:ci .
+
+      # ── Trivy binary — cached by exact version to avoid repeated downloads ──
+      - name: Cache Trivy binary
+        id: cache-trivy
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/trivy-bin
+          key: trivy-${{ env.TRIVY_VERSION }}-linux-x86_64
+
+      - name: Download Trivy (fail CI if unavailable)
+        # Only runs when the cache is cold. If the download fails for any reason
+        # (network error, rate limit, wrong version) the step — and the whole job
+        # — exits non-zero immediately. There is no continue-on-error here.
+        if: steps.cache-trivy.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.cache/trivy-bin
+          # Trivy's "Linux-64bit" naming convention for amd64 tarballs has been
+          # stable across all releases and is used by the automated bump workflow.
+          wget --quiet --show-progress \
+            -O /tmp/trivy.tar.gz \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          tar -xzf /tmp/trivy.tar.gz -C ~/.cache/trivy-bin/ trivy
+          chmod +x ~/.cache/trivy-bin/trivy
+        env:
+          TRIVY_VERSION: ${{ env.TRIVY_VERSION }}
+
+      - name: Verify Trivy binary is present and executable
+        # This step explicitly validates the binary after a cache restore as well
+        # as after a fresh download, so a corrupt or missing file is never silently
+        # ignored.
+        run: ~/.cache/trivy-bin/trivy --version
+
+      # ── Freshness guard ── fail CI if the pinned version is > 30 days old ──
+      - name: Enforce Trivy freshness (fail if scanner version > 30 days old)
+        run: |
+          set -euo pipefail
+          RELEASE_INFO=$(curl -sf \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/aquasecurity/trivy/releases/tags/v${TRIVY_VERSION}")
+          RELEASE_DATE=$(echo "$RELEASE_INFO" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['published_at'])")
+          NOW_EPOCH=$(date +%s)
+          RELEASE_EPOCH=$(date -d "${RELEASE_DATE}" +%s)
+          DIFF_DAYS=$(( (NOW_EPOCH - RELEASE_EPOCH) / 86400 ))
+          MAX_AGE_DAYS=30
+          echo "Trivy v${TRIVY_VERSION} was published ${DIFF_DAYS} day(s) ago."
+          if [ "$DIFF_DAYS" -gt "$MAX_AGE_DAYS" ]; then
+            echo "::error title=Stale Trivy version::Pinned Trivy v${TRIVY_VERSION} is ${DIFF_DAYS} days old (limit: ${MAX_AGE_DAYS}). Update TRIVY_VERSION in ci.yml or wait for the weekly trivy-update workflow to open a bump PR."
+            exit 1
+          fi
+        env:
+          TRIVY_VERSION: ${{ env.TRIVY_VERSION }}
+
+      # ── Strict security scan — blocks the build on real vulnerabilities ──
+      - name: Run Trivy container scan (strict — blocks on CRITICAL/HIGH)
+        run: |
+          ~/.cache/trivy-bin/trivy image \
+            --exit-code 1 \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --format table \
+            rsea-agent:ci

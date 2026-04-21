@@ -1,0 +1,100 @@
+name: Bump Trivy Version
+
+# Runs every Monday at 09:00 UTC and checks whether a newer Trivy release is
+# available. If so, it bumps the TRIVY_VERSION constant in ci.yml and opens a
+# pull request for human review. This ensures the pinned scanner never goes
+# stale without someone noticing, and keeps the staleness-guard in the
+# container-scan job from tripping unexpectedly.
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Every Monday at 09:00 UTC
+  workflow_dispatch: # Allow one-off manual runs
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-and-bump:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Fetch latest Trivy release and compare with pinned version
+        id: versions
+        run: |
+          set -euo pipefail
+
+          # Fetch the latest published release from the Trivy GitHub repo.
+          LATEST_TAG=$(curl -sf \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/aquasecurity/trivy/releases/latest" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+          LATEST="${LATEST_TAG#v}"
+
+          # Read the currently pinned version from ci.yml.
+          CURRENT=$(grep 'TRIVY_VERSION:' .github/workflows/ci.yml \
+            | head -1 \
+            | sed 's/.*TRIVY_VERSION: "\([0-9.]*\)".*/\1/')
+
+          echo "current=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "latest=${LATEST}"   >> "$GITHUB_OUTPUT"
+
+          if [ "$LATEST" = "$CURRENT" ]; then
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+            echo "Trivy is already at the latest version (${CURRENT}). Nothing to do."
+          else
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+            echo "New Trivy version available: ${LATEST} (currently pinned: ${CURRENT})"
+          fi
+
+      - name: Bump TRIVY_VERSION in ci.yml
+        if: steps.versions.outputs.needs_update == 'true'
+        run: |
+          set -euo pipefail
+          LATEST="${{ steps.versions.outputs.latest }}"
+          CURRENT="${{ steps.versions.outputs.current }}"
+          sed -i \
+            "s/TRIVY_VERSION: \"${CURRENT}\"/TRIVY_VERSION: \"${LATEST}\"/" \
+            .github/workflows/ci.yml
+          echo "Bumped TRIVY_VERSION from ${CURRENT} to ${LATEST} in ci.yml."
+
+      - name: Open pull request for version bump
+        if: steps.versions.outputs.needs_update == 'true'
+        uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
+        with:
+          token: ${{ github.token }}
+          commit-message: "ci: bump Trivy to v${{ steps.versions.outputs.latest }}"
+          title: "ci: bump Trivy from v${{ steps.versions.outputs.current }} to v${{ steps.versions.outputs.latest }}"
+          body: |
+            ## Automated Trivy version bump
+
+            This PR was opened automatically by the weekly [`trivy-update`](.github/workflows/trivy-update.yml) workflow.
+
+            | | Version |
+            |---|---|
+            | **Before** | `v${{ steps.versions.outputs.current }}` |
+            | **After** | `v${{ steps.versions.outputs.latest }}` |
+
+            ### Why this matters
+
+            The `container-scan` job in `ci.yml` enforces a **30-day freshness guard**: it
+            fails CI if the pinned Trivy version is older than 30 days. Merging this PR
+            keeps the scanner current and prevents that guard from tripping, while ensuring
+            the scanner's CVE database remains up to date.
+
+            ### Review checklist
+
+            - [ ] Confirm the new version is not a pre-release or retracted release
+            - [ ] Check the [Trivy changelog](https://github.com/aquasecurity/trivy/releases/tag/v${{ steps.versions.outputs.latest }}) for breaking changes
+            - [ ] Merge once satisfied — CI will validate the bump automatically
+          branch: "ci/bump-trivy-${{ steps.versions.outputs.latest }}"
+          base: main
+          labels: |
+            security
+            dependencies
+            automated
