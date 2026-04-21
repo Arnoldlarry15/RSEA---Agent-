@@ -111,7 +111,7 @@ CONTEXT: ${JSON.stringify(enrichedContext).substring(0, 800)}`;
         objective,
         tasks: tasks.map((t: any) => ({ ...t, status: 'pending' }))
       };
-    } catch (err) {
+    } catch (_err) {
       return fallbackPlan('Fallback task execution');
     }
   }

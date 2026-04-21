@@ -13,7 +13,7 @@
  *   P3 — Strict-Transport-Security header emitted in production only.
  */
 
-import express, { Request } from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
 import { timingSafeEqual } from 'crypto';
 import { getLogs, getLogsByTraceId } from './utils/logger';
 import { ingestWebhookEvent } from './adapters/moltbook';
@@ -83,7 +83,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
 
   // ── Bearer-token middleware for protected endpoints ────────────────────────
   // In production API_SECRET must be set; requests are rejected if it is missing.
-  const requireAuth = (_req: any, res: any, next: any) => {
+  const requireAuth = (req: Request, res: Response, next: NextFunction) => {
     const secret = process.env.API_SECRET;
     if (!secret) {
       if (isProduction) {
@@ -93,7 +93,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
       // Development only: allow unauthenticated access when no secret is configured
       return next();
     }
-    const authHeader: string = (_req as Request).headers['authorization'] ?? '';
+    const authHeader: string = req.headers['authorization'] ?? '';
     const expected = `Bearer ${secret}`;
     const headerBuf = Buffer.from(authHeader);
     const expectedBuf = Buffer.from(expected);
@@ -170,7 +170,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
         : `moltbook_event(${event.type}): ${JSON.stringify(event)}`;
       agentLoop.getAgent().addInstruction(instruction);
       res.status(200).json({ acknowledged: true, processed: true, eventId: event.id });
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Webhook processing failed' });
     }
   });
@@ -189,7 +189,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
         uptime: process.uptime(),
         goals: agentLoop.getAgent().getGoals().getGoals(),
       });
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to generate status' });
     }
   });
@@ -198,7 +198,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
     try {
       const health = agentLoop.getAgent().checkHealth();
       res.status(health.status === 'healthy' ? 200 : 503).json(health);
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ status: 'unhealthy', error: 'Internal health check failure' });
     }
   });
@@ -230,7 +230,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
       } else {
         res.status(503).json({ status: 'not_ready', components: health.components });
       }
-    } catch (err) {
+    } catch (_err) {
       res.status(503).json({ status: 'not_ready', error: 'Health check failed' });
     }
   });
@@ -244,7 +244,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
       }
       const logs = getLogs();
       res.json(logs.reverse().slice(0, 100)); // Last 100 logs
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to fetch logs' });
     }
   });
@@ -253,7 +253,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
     try {
       const memory = agentLoop.getAgent().getMemory().getSnapshot();
       res.json(memory);
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to fetch memory' });
     }
   });
@@ -277,7 +277,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
         },
         nodeEnv: process.env.NODE_ENV || 'development'
       });
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to fetch debug state' });
     }
   });
@@ -296,7 +296,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
   app.get('/api/metrics', requireAuth, (_req, res) => {
     try {
       res.json(cycleMetrics.getSummary());
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to fetch metrics' });
     }
   });
@@ -347,7 +347,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
       lines.push('');
       res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
       res.send(lines.join('\n'));
-    } catch (err) {
+    } catch (_err) {
       res.status(500).send('# Error generating metrics\n');
     }
   });
@@ -368,7 +368,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
       }
       agentLoop.getAgent().addInstruction(trimmed);
       res.json({ message: 'Instruction queued' });
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to process command' });
     }
   });
@@ -402,7 +402,7 @@ export function createApp(agentLoop: AgentLoop, options: CreateAppOptions = {}):
       } else {
         res.status(400).json({ error: 'Invalid action' });
       }
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Control action failed' });
     }
   });

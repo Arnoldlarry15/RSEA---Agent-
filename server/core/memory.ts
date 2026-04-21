@@ -100,7 +100,7 @@ export class MemorySystem {
     if (row) {
       try {
         return JSON.parse(row.value);
-      } catch (e) {
+      } catch (_e) {
         return row.value;
       }
     }
@@ -145,7 +145,7 @@ export class MemorySystem {
     const shortTerm = shortTermRows.map(row => {
       try {
         return { ...JSON.parse(row.data), timestamp: row.timestamp };
-      } catch (e) {
+      } catch (_e) {
         return { data: row.data, timestamp: row.timestamp };
       }
     });
@@ -155,7 +155,7 @@ export class MemorySystem {
     for (const row of longTermRows) {
       try {
         longTerm[row.key] = JSON.parse(row.value);
-      } catch (e) {
+      } catch (_e) {
         longTerm[row.key] = row.value;
       }
     }
@@ -170,7 +170,7 @@ export class MemorySystem {
     return rows.reverse().map(row => {
       try {
         return { ...JSON.parse(row.data), timestamp: row.timestamp };
-      } catch (e) {
+      } catch (_e) {
         return { data: row.data, timestamp: row.timestamp };
       }
     });
@@ -212,7 +212,7 @@ export class MemorySystem {
     return rows.map(row => {
       try {
         return { ...JSON.parse(row.data), timestamp: row.timestamp };
-      } catch (e) {
+      } catch (_e) {
         return { data: row.data, timestamp: row.timestamp };
       }
     });
@@ -228,7 +228,7 @@ export class MemorySystem {
       this.db.prepare('SELECT 1').get();
       this.db.prepare('SELECT sqlite_version()').get();
       return true;
-    } catch (e) {
+    } catch (_e) {
       return false;
     }
   }

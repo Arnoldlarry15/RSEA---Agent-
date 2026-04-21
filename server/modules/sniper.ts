@@ -3,6 +3,7 @@ import { RulesEngine } from '../core/rules';
 import { ToolValidator } from './validator';
 import { logEvent } from '../utils/logger';
 import type { ToolPreference } from '../core/strategy/config';
+import type { PlanTask } from '../interfaces/agent';
 
 export class Sniper {
   private executor: Executor;
@@ -34,7 +35,7 @@ export class Sniper {
    *                       task does not specify a tool, the highest-weighted entry from
    *                       this map is chosen instead of the default 'simulate' fallback.
    */
-  async executeSurgicalStrike(task: any, toolPreference?: ToolPreference) {
+  async executeSurgicalStrike(task: PlanTask, toolPreference?: ToolPreference) {
     logEvent('sniper_engage', { target: task });
 
     // Gate through RulesEngine — only tasks scoring > 60 proceed

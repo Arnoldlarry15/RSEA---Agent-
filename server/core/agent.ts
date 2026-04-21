@@ -149,12 +149,7 @@ export class Agent {
     ).length;
     cycleMetrics.record(cycleData.evaluations ?? [], riskGateBlocks);
 
-    // Goal completion is driven by explicit markCompleted() calls (e.g. from external signals
-    // or future criteria checks) — not by fragile outcome-string matching.
-    const goalCompleted = this.goals.isComplete();
-
-    // Reflect: pass observations, ranked plan, extracted action list, outcome results,
-    // and cycle evaluations so the Reflector can exercise strategy authority.
+    this.currentState = AgentState.IDLE;
     const executedActions = cycleData.results.map((r: any) => r.action);
     await this.reflector.reflect(cycleData.observations, cycleData.plan, executedActions, cycleData.results, cycleData.evaluations);
 

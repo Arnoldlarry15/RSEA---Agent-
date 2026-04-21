@@ -56,7 +56,7 @@ async function refreshToken(): Promise<void> {
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`Token refresh failed: HTTP ${res.status}`);
-    const data = await res.json() as any;
+    const data = await res.json() as { access_token?: string };
     if (data.access_token) {
       currentToken = data.access_token;
       logEvent('moltbook_token_refreshed', { ok: true });
@@ -71,11 +71,11 @@ async function refreshToken(): Promise<void> {
 
 interface MoltbookRequestOptions {
   method?: string;
-  body?: any;
+  body?: unknown;
   retryOnUnauthorized?: boolean;
 }
 
-async function moltbookRequest(path: string, opts: MoltbookRequestOptions = {}): Promise<any> {
+async function moltbookRequest(path: string, opts: MoltbookRequestOptions = {}): Promise<unknown> {
   if (!BASE_URL) {
     logEvent('moltbook_error', { reason: 'MOLTBOOK_API_URL not configured', path });
     throw new Error('Moltbook adapter: MOLTBOOK_API_URL is not set');
@@ -120,7 +120,7 @@ async function moltbookRequest(path: string, opts: MoltbookRequestOptions = {}):
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /** Send a message to a Moltbook thread. */
-export async function sendMessage(threadId: string, content: string): Promise<any> {
+export async function sendMessage(threadId: string, content: string): Promise<unknown> {
   logEvent('moltbook_send_message', { threadId, contentLength: content.length });
   return moltbookRequest(`/threads/${encodeURIComponent(threadId)}/messages`, {
     method: 'POST',
@@ -129,7 +129,7 @@ export async function sendMessage(threadId: string, content: string): Promise<an
 }
 
 /** Fetch a thread's message history (paginated; returns first page by default). */
-export async function fetchThread(threadId: string, page = 1, limit = 50): Promise<any> {
+export async function fetchThread(threadId: string, page = 1, limit = 50): Promise<unknown> {
   logEvent('moltbook_fetch_thread', { threadId, page, limit });
   return moltbookRequest(
     `/threads/${encodeURIComponent(threadId)}/messages?page=${page}&limit=${limit}`
@@ -137,7 +137,7 @@ export async function fetchThread(threadId: string, page = 1, limit = 50): Promi
 }
 
 /** Register this agent with Moltbook (optional; call once at startup if needed). */
-export async function registerAgent(agentMeta: Record<string, any>): Promise<any> {
+export async function registerAgent(agentMeta: Record<string, unknown>): Promise<unknown> {
   logEvent('moltbook_register_agent', { agentMeta });
   return moltbookRequest('/agents/register', { method: 'POST', body: agentMeta });
 }
@@ -196,7 +196,7 @@ export interface MoltbookWebhookEvent {
   senderId?: string;
   content?: string;
   timestamp?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /**

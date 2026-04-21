@@ -1,0 +1,70 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rsea-agent-netpol
+  namespace: rsea
+  labels:
+    app: rsea-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: rsea-agent
+
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # ── Ingress ────────────────────────────────────────────────────────────────
+  # Allow inbound traffic only from the cluster's ingress controller / load
+  # balancer.  Adjust the `podSelector` or add a `namespaceSelector` to match
+  # the exact namespace / labels used by your ingress controller.
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 3000
+      # Remove or widen this block if your ingress controller lives in a
+      # different namespace, or replace with a namespaceSelector if appropriate.
+      from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+
+  # ── Egress ─────────────────────────────────────────────────────────────────
+  # The agent makes outbound calls to:
+  #   1. The Kubernetes DNS resolver (kube-dns) — required for hostname lookups.
+  #   2. External HTTPS APIs (LLM providers, Binance, CoinGecko, Moltbook).
+  #   3. Ollama (when running as a sidecar or cluster service on port 11434).
+  # All other egress — including access to the cloud metadata endpoint
+  # (169.254.169.254) and the cluster's private subnet — is denied by default,
+  # which complements the application-layer SSRF guard in server/utils/ssrf.ts.
+  egress:
+    # Kubernetes DNS — must be allowed or all external hostname resolution breaks.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # External HTTPS (LLM APIs, market data feeds, Moltbook)
+    - ports:
+        - protocol: TCP
+          port: 443
+
+    # External HTTP — only needed when LLM_PROVIDER=ollama with a non-TLS
+    # local endpoint, or when SIGNAL_FEED_URL targets an HTTP endpoint.
+    # Remove this rule if all external traffic is HTTPS-only.
+    - ports:
+        - protocol: TCP
+          port: 80
+
+    # Ollama sidecar or in-cluster service (port 11434)
+    - ports:
+        - protocol: TCP
+          port: 11434
+      to:
+        - podSelector:
+            matchLabels:
+              app: ollama

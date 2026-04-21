@@ -29,7 +29,10 @@ export function isSsrfTarget(rawUrl: string): boolean {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return true; // Only HTTP(S) outbound requests are allowed
   }
-  return PRIVATE_HOST_PATTERNS.some((p) => p.test(parsed.hostname));
+  // The WHATWG URL spec wraps IPv6 addresses in brackets (e.g. "[::1]").
+  // Strip them so the hostname can be matched by the pattern list.
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+  return PRIVATE_HOST_PATTERNS.some((p) => p.test(hostname));
 }
 
 /**
@@ -54,7 +57,9 @@ export async function isSsrfTargetAsync(rawUrl: string): Promise<boolean> {
     return true; // Malformed
   }
 
-  const { hostname } = parsed;
+  const { hostname: rawHostname } = parsed;
+  // Strip IPv6 brackets so net.isIP and the pattern list work correctly.
+  const hostname = rawHostname.replace(/^\[|\]$/g, '');
 
   // If the hostname is already a raw IP address the sync check already handled it.
   if (net.isIP(hostname) !== 0) return false;

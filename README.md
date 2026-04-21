@@ -58,6 +58,112 @@ Actions pass through a two-stage control system before execution:
    ```
    The app will be available at `http://localhost:3000`.
 
+## Docker Quick-Start
+
+The fastest way to run RSEA Agent in a container:
+
+```bash
+# 1. Build the image
+docker build -t rsea-agent:latest .
+
+# 2. Run with simulation mode (safe default — no live execution)
+docker run -d \
+  --name rsea-agent \
+  -p 3000:3000 \
+  -e API_SECRET="$(openssl rand -hex 32)" \
+  -e DRY_RUN=true \
+  -v rsea-data:/app/data \
+  rsea-agent:latest
+
+# 3. Tail logs
+docker logs -f rsea-agent
+
+# 4. Verify health
+curl http://localhost:3000/api/health/live
+```
+
+### Using Docker Compose (recommended for local development)
+
+```bash
+# Copy and edit the environment file first
+cp .env.example .env.local
+
+# Start all services
+docker compose up -d
+
+# Tail logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+Key Compose environment variables to set in `.env.local`:
+
+| Variable | Description |
+|----------|-------------|
+| `API_SECRET` | Required — generate with `openssl rand -hex 32` |
+| `LLM_PROVIDER` | `gemini` / `openai` / `anthropic` / `grok` / `ollama` |
+| `GEMINI_API_KEY` | (or whichever provider key you need) |
+| `DRY_RUN` | `true` (simulation) or `false` (live execution) |
+
+## Kubernetes Quick-Start
+
+> ⚠️ RSEA Agent uses SQLite and is single-replica only. See [Scaling Notes](#8-scaling-notes) in the runbook.
+
+### Prerequisites
+
+- A Kubernetes cluster (v1.25+) with `kubectl` configured
+- A container registry with your built image (replace `your-registry.io/rsea-agent:0.1.0` throughout)
+
+### 1 — Create the namespace
+
+```bash
+kubectl create namespace rsea
+```
+
+### 2 — Create the Secret (sensitive values)
+
+```bash
+kubectl create secret generic rsea-secret \
+  --namespace rsea \
+  --from-literal=API_SECRET="$(openssl rand -hex 32)" \
+  --from-literal=GEMINI_API_KEY="your-gemini-key"   # optional; add the key you use
+```
+
+### 3 — Apply the ConfigMap, PVC, Deployment, Service, and NetworkPolicy
+
+```bash
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/pvc.yaml
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+kubectl apply -f k8s/network-policy.yaml   # requires a CNI that enforces NetworkPolicy (e.g. Calico, Cilium)
+```
+
+### 4 — Verify the rollout
+
+```bash
+kubectl rollout status deployment/rsea-agent -n rsea
+kubectl get pods -n rsea
+kubectl logs -n rsea -l app=rsea-agent --tail=50
+```
+
+### 5 — Access the API
+
+```bash
+# Port-forward locally for testing
+kubectl port-forward -n rsea svc/rsea-agent 3000:3000
+
+# Check health
+curl http://localhost:3000/api/health/live
+
+# Check operational metrics (requires API_SECRET)
+curl -H "Authorization: Bearer $API_SECRET" http://localhost:3000/api/metrics
+```
+
+For production traffic, configure an Ingress resource pointing to the `rsea-agent` Service on port 3000.
+
 ## DRY_RUN and the Mainnet Protocol
 
 By default, `DRY_RUN=true` — the executor logs every action but **skips actual execution**. This is the safe, simulation-only mode. To enable live execution (the **Mainnet Protocol**), operators must explicitly set `DRY_RUN=false` in their environment.

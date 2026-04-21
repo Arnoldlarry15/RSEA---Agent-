@@ -100,6 +100,17 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/data
+            # Required when readOnlyRootFilesystem=true: Node.js, SQLite WAL
+            # temp files, and npm/node_modules may need a writable /tmp.
+            - name: tmp
+              mountPath: /tmp
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
 
           resources:
             requests:
@@ -144,6 +155,13 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: rsea-data-pvc
+        # In-memory tmpfs for Node.js and SQLite temporary files.
+        # Required because readOnlyRootFilesystem: true blocks writes
+        # to any path not covered by an explicit volume mount.
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
 
       # Graceful termination — the app listens for SIGTERM and shuts down cleanly
       terminationGracePeriodSeconds: 30
