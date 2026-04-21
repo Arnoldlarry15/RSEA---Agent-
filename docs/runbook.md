@@ -285,10 +285,10 @@ Key metrics to dashboard and alert on:
 
 | Metric | Alert threshold | Meaning |
 |--------|----------------|---------|
-| `rsea_success_rate_percent` | < 50 | More than half of evaluations are failing |
-| `rsea_risk_gate_blocks_total` | rapid rise | Many actions being hard-blocked; check bans |
-| `rsea_score_avg` | < 40 | Average evaluation score below acceptable range |
-| `rsea_cycles_total` | stagnant | Agent loop has stalled |
+| `rsea_success_rate_percent` | < 50 for > 5 minutes | More than half of evaluations are failing |
+| `rsea_risk_gate_blocks_total` | increase > 10 within 5 minutes | Abnormal burst of hard-blocked actions; check bans |
+| `rsea_score_avg` | < 40 for > 5 minutes | Average evaluation score below acceptable range |
+| `rsea_cycles_total` | no change for > 15 minutes | Agent loop has stalled or been stopped |
 
 ### Health Probes
 
