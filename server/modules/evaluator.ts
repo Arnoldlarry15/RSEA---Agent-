@@ -31,7 +31,7 @@ STRATEGIES: ${JSON.stringify(strategies)}`;
 
       if (result?.ranked && Array.isArray(result.ranked)) {
         return strategies.map(s => {
-          const rankData = result.ranked.find((r: any) => r.strategyId === s.id);
+          const rankData = (result.ranked as Array<Record<string, unknown>>).find((r) => r.strategyId === s.id);
           return { ...s, score: rankData ? rankData.score : 50 };
         }).sort((a: any, b: any) => b.score - a.score);
       }

@@ -101,6 +101,13 @@ spec:
             - name: data
               mountPath: /app/data
 
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
           resources:
             requests:
               cpu: "250m"

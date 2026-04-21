@@ -15,6 +15,8 @@ in a production environment.
 6. [Log Management](#6-log-management)
 7. [Rolling Restart / Upgrade](#7-rolling-restart--upgrade)
 8. [Scaling Notes](#8-scaling-notes)
+9. [Monitoring & Alerting](#9-monitoring--alerting)
+10. [Troubleshooting](#10-troubleshooting)
 
 ---
 
@@ -260,3 +262,192 @@ Recommended approach for zero-data-loss upgrades:
   the in-process rate limiter with a shared store (Redis).
 - Vertical scaling (increasing container CPU/memory limits) is safe and
   recommended for high-throughput workloads.
+
+---
+
+## 9. Monitoring & Alerting
+
+### Prometheus / Grafana
+
+RSEA Agent exposes metrics in Prometheus text format at `GET /api/metrics/prometheus`.
+Add the following scrape config to your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: rsea-agent
+    bearer_token: <your-API_SECRET>
+    static_configs:
+      - targets: ['<host>:3000']
+    metrics_path: /api/metrics/prometheus
+```
+
+Key metrics to dashboard and alert on:
+
+| Metric | Alert threshold | Meaning |
+|--------|----------------|---------|
+| `rsea_success_rate_percent` | < 50 | More than half of evaluations are failing |
+| `rsea_risk_gate_blocks_total` | rapid rise | Many actions being hard-blocked; check bans |
+| `rsea_score_avg` | < 40 | Average evaluation score below acceptable range |
+| `rsea_cycles_total` | stagnant | Agent loop has stalled |
+
+### Health Probes
+
+Liveness and readiness probes are registered in the Kubernetes `deployment.yaml`:
+
+- `GET /api/health/live` — returns `200` while the process is running.
+  - Kubernetes restarts the container if this fails 3 times.
+- `GET /api/health/ready` — returns `200` only when DB and LLM subsystems are healthy.
+  - Kubernetes stops routing traffic to the pod while this is failing.
+
+Manually check health at any time:
+
+```bash
+curl http://localhost:3000/api/health
+curl http://localhost:3000/api/health/ready
+```
+
+### Real-time log streaming (WebSocket)
+
+```bash
+# Using wscat (npm install -g wscat)
+wscat -c "ws://localhost:3000/ws/logs?token=$API_SECRET"
+```
+
+Each WebSocket message is a JSON object with a `type` field (`history` on connect,
+`log` for each new event).
+
+---
+
+## 10. Troubleshooting
+
+### Agent loop is not running
+
+**Symptom**: `GET /api/status` shows no recent goal activity; logs are silent.
+
+1. Check the kill switch:
+   ```bash
+   curl -s http://localhost:3000/api/debug/state \
+     -H "Authorization: Bearer $API_SECRET" | jq .config.killSwitch
+   ```
+   If `true`, deactivate it:
+   ```bash
+   curl -s -X POST http://localhost:3000/api/control \
+     -H "Authorization: Bearer $API_SECRET" \
+     -H "Content-Type: application/json" \
+     -d '{"action":"kill_switch_off"}'
+   ```
+
+2. Check for crash errors in logs:
+   ```bash
+   curl -s http://localhost:3000/api/logs \
+     -H "Authorization: Bearer $API_SECRET" \
+     | jq '.[] | select(.stage | test("error|fail|kill"))'
+   ```
+
+3. Restart the agent loop if needed:
+   ```bash
+   curl -s -X POST http://localhost:3000/api/control \
+     -H "Authorization: Bearer $API_SECRET" \
+     -H "Content-Type: application/json" \
+     -d '{"action":"start"}'
+   ```
+
+---
+
+### All actions are being blocked (risk gate)
+
+**Symptom**: `rsea_risk_gate_blocks_total` is rising; `results` contain only `blocked` entries.
+
+1. Fetch current metrics to identify the blocked tools:
+   ```bash
+   curl -s http://localhost:3000/api/metrics \
+     -H "Authorization: Bearer $API_SECRET" | jq .toolOutcomes
+   ```
+
+2. Check memory for banned tools (set by the Reflector after repeated failures):
+   ```bash
+   curl -s http://localhost:3000/api/memory \
+     -H "Authorization: Bearer $API_SECRET" \
+     | jq '.longTerm.REFLECTOR_BANS'
+   ```
+
+3. If a tool was banned incorrectly, clear the ban by directly editing the SQLite
+   database:
+   ```bash
+   sqlite3 data/memory.db \
+     "DELETE FROM long_term WHERE key = 'REFLECTOR_BANS';"
+   ```
+   Then restart the container so the in-memory snapshot is refreshed.
+
+---
+
+### High memory usage
+
+**Symptom**: Container RSS is growing over time.
+
+- The short-term memory ring-buffer is capped; long-term memory is SQLite-backed.
+- Check whether log rotation is keeping `data/logs.json` under 500 lines:
+  ```bash
+  wc -l data/logs.json
+  ```
+- The deduplication set for Moltbook webhooks is capped at 10 000 entries and is
+  persisted to `data/moltbook_dedup.json`.  Large dedup files can be cleared
+  safely on restart:
+  ```bash
+  rm data/moltbook_dedup.json
+  ```
+
+---
+
+### LLM provider errors / fallback to simulation
+
+**Symptom**: Logs contain `analyze error` or `complete error`; agent operates in
+simulation mode.
+
+1. Confirm the provider and API key are set:
+   ```bash
+   curl -s http://localhost:3000/api/health \
+     -H "Authorization: Bearer $API_SECRET" | jq .components
+   ```
+
+2. Check for provider-specific error messages in logs:
+   ```bash
+   curl -s http://localhost:3000/api/logs \
+     -H "Authorization: Bearer $API_SECRET" \
+     | jq '.[] | select(.stage | test("llm|analyze|complete"))'
+   ```
+
+3. Verify the API key is not a placeholder (starts with `MY_` or equals
+   `your_key_here`) — these are blocked by the `isPlaceholder()` guard in `llm.ts`.
+
+---
+
+### Database corruption or missing tables
+
+**Symptom**: Container exits with a SQLite error on startup; health check fails.
+
+1. Restore from backup (see [Section 4](#4-sqlite-database-backup--restore)).
+2. If no backup exists, delete the DB and accept a fresh start:
+   ```bash
+   rm data/memory.db
+   # restart the container
+   ```
+   All long-term memory and strategy history will be lost, but the agent will
+   re-initialise cleanly.
+
+---
+
+### 503 from /api/health/ready (Kubernetes)
+
+**Symptom**: Pod is running but traffic is not being routed to it.
+
+- The readiness probe (`/api/health/ready`) returns 503 when the DB or LLM
+  subsystems report unhealthy.
+- Common causes: the SQLite file is locked by a previous instance, or the LLM
+  API key is missing/invalid.
+- Check pod events and logs:
+  ```bash
+  kubectl describe pod -n rsea -l app=rsea-agent
+  kubectl logs -n rsea -l app=rsea-agent --tail=100
+  ```
+

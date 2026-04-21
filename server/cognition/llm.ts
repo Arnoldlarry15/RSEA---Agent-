@@ -6,6 +6,16 @@ import Anthropic from "@anthropic-ai/sdk";
 // or leave it unset to auto-detect from whichever API key is present.
 type LLMProvider = "gemini" | "openai" | "anthropic" | "grok" | "ollama";
 
+/** Shape of a successful Ollama /api/chat response. */
+interface OllamaChatResponse {
+  message?: { content?: string };
+}
+
+/** Shape of a successful Ollama /api/embeddings response. */
+interface OllamaEmbedResponse {
+  embedding?: unknown[];
+}
+
 function isPlaceholder(value: string | undefined): boolean {
   return !value || value.startsWith("MY_") || value === "your_key_here";
 }
@@ -154,7 +164,7 @@ export class LLMInterface {
           format: "json"
         })
       });
-      const json = await resp.json() as any;
+      const json = await resp.json() as OllamaChatResponse;
       return json?.message?.content ?? "";
     }
 
@@ -169,7 +179,7 @@ export class LLMInterface {
    * Performs analysis using the configured LLM provider.
    * Falls back to simulation mode if no provider is active.
    */
-  async analyze(observations: any, instructions: string[] = [], goals: any = null) {
+  async analyze(observations: unknown, instructions: string[] = [], goals: { primary: string; subTasks: string[] } | null = null) {
     if (!this.provider) {
       return {
         opportunities: observations,
@@ -232,14 +242,14 @@ Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.`;
     } catch (err) {
       console.error(`[LLM] analyze error (${this.provider}):`, err);
       return {
-        opportunities: observations.slice(0, 1),
+        opportunities: Array.isArray(observations) ? observations.slice(0, 1) : [],
         notes: "Analysis failed. Fallback to minimal action.",
         model: "error-fallback"
       };
     }
   }
 
-  async summarizeExperience(observations: any, actions: any, results: any) {
+  async summarizeExperience(observations: unknown, actions: unknown, results: unknown) {
     if (!this.provider) return { insight: "Simulated Insight: Market dynamics cataloged successfully." };
 
     try {
@@ -268,7 +278,7 @@ Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.`;
     }
   }
 
-  async generateModifiers(recentContext: any[], currentModifiers: string[]): Promise<string[] | null> {
+  async generateModifiers(recentContext: unknown[], currentModifiers: string[]): Promise<string[] | null> {
     if (!this.provider) return null;
 
     try {
@@ -304,7 +314,7 @@ Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.`;
    * Falls back to null in simulation mode so callers can provide their own defaults.
    * Raw response is logged at verbose level for auditability.
    */
-  async complete(systemPrompt: string, userPrompt: string): Promise<any | null> {
+  async complete(systemPrompt: string, userPrompt: string): Promise<Record<string, unknown> | null> {
     if (!this.provider) return null;
     try {
       const raw = await this.callChat(systemPrompt, userPrompt);
@@ -359,8 +369,8 @@ Always respond with valid JSON matching the OUTPUT PROTOCOL exactly.`;
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ model: this.ollamaEmbedModel, prompt: text })
         });
-        const json = await resp.json() as any;
-        if (Array.isArray(json?.embedding)) return json.embedding;
+        const json = await resp.json() as OllamaEmbedResponse;
+        if (Array.isArray(json?.embedding)) return json.embedding as number[];
       } catch (err) {
         console.error("[LLM] Ollama embedding failed:", err);
       }

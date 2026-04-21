@@ -57,4 +57,59 @@ describe('Sniper', () => {
     const results = await sniper.executeSurgicalStrike({ id: 't1', score: 75, description: 'task' });
     expect(typeof results[0].timestamp).toBe('string');
   });
+
+  // ── toolPreference path ────────────────────────────────────────────────────
+
+  it('uses the highest-weighted tool from toolPreference when task has no tool field', async () => {
+    // The Executor mock always returns simulated; we just need to confirm execution
+    // proceeds (not blocked) and the tool selection path is exercised.
+    const results = await sniper.executeSurgicalStrike(
+      { id: 't2', score: 80, description: 'no explicit tool' },
+      { api_fetch: 0.3, simulate: 0.9, code_eval: 0.5 },
+    );
+    expect(results[0].status).toBe('simulated');
+  });
+
+  it('falls back to simulate when toolPreference map is empty', async () => {
+    const results = await sniper.executeSurgicalStrike(
+      { id: 't3', score: 80, description: 'empty toolPreference' },
+      {},
+    );
+    expect(results[0].status).toBe('simulated');
+  });
+
+  it('respects the tool explicitly set on the task even when toolPreference is provided', async () => {
+    const results = await sniper.executeSurgicalStrike(
+      { id: 't4', score: 80, description: 'explicit tool', tool: 'simulate' },
+      { api_fetch: 0.99 }, // api_fetch has higher weight but task specifies simulate
+    );
+    expect(results[0].status).toBe('simulated');
+  });
+
+  // ── ToolValidator-blocked path ─────────────────────────────────────────────
+
+  it('blocks a task whose tool is not on the allowed-tools whitelist', async () => {
+    const results = await sniper.executeSurgicalStrike({
+      id: 't5',
+      score: 80,
+      description: 'forbidden tool',
+      tool: 'dangerous_tool',
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0].status).toBe('blocked');
+    expect((results[0] as any).outcome).toContain('ToolValidator');
+  });
+
+  it('blocks an api_fetch task that is missing the required url parameter', async () => {
+    const results = await sniper.executeSurgicalStrike({
+      id: 't6',
+      score: 80,
+      description: 'api_fetch without url',
+      tool: 'api_fetch',
+      payload: {}, // url is missing
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0].status).toBe('blocked');
+    expect((results[0] as any).outcome).toContain('ToolValidator');
+  });
 });

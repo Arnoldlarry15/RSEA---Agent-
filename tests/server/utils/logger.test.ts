@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 // Import the logger statically — it writes to data/logs.json relative to cwd
-import { logEvent, getLogs, getLogsByTraceId, subscribeToLogs, newTraceId, setTraceId, getTraceId, _resetLogEventCounter } from '../../../server/utils/logger';
+import { logEvent, getLogs, getLogsByTraceId, subscribeToLogs, newTraceId, setTraceId, getTraceId, runWithTraceId, _resetLogEventCounter } from '../../../server/utils/logger';
 
 const LOG_FILE = path.join(process.cwd(), 'data', 'logs.json');
 
@@ -135,6 +135,75 @@ describe('Logger', () => {
       const logs = getLogs();
       const last = logs[logs.length - 1];
       expect(last.traceId).toBe('explicit-id');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // runWithTraceId
+  // ---------------------------------------------------------------------------
+  describe('runWithTraceId', () => {
+    it('propagates the trace ID to logEvent calls within the callback', () => {
+      runWithTraceId('run-trace-xyz', () => {
+        logEvent('inside_run', { v: 1 });
+      });
+      const logs = getLogs();
+      const entry = logs.find((l: any) => l.stage === 'inside_run');
+      expect(entry?.traceId).toBe('run-trace-xyz');
+    });
+
+    it('does not leak the trace ID outside the callback', () => {
+      runWithTraceId('isolated-trace', () => {
+        // no-op — just verifies isolation
+      });
+      // After the callback, the fallback trace ID should not be 'isolated-trace'
+      const idAfter = getTraceId();
+      expect(idAfter).not.toBe('isolated-trace');
+    });
+
+    it('returns the callback return value', () => {
+      const result = runWithTraceId('ret-trace', () => 42);
+      expect(result).toBe(42);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Subscriber error-handling
+  // ---------------------------------------------------------------------------
+  describe('subscriber error handling', () => {
+    it('a throwing subscriber does not prevent other subscribers from receiving events', () => {
+      const received: any[] = [];
+      // First subscriber: always throws
+      const unsub1 = subscribeToLogs(() => { throw new Error('subscriber boom'); });
+      // Second subscriber: collects events
+      const unsub2 = subscribeToLogs((entry) => received.push(entry));
+
+      expect(() => logEvent('error_resilience', { x: 1 })).not.toThrow();
+      expect(received).toHaveLength(1);
+      expect(received[0].stage).toBe('error_resilience');
+
+      unsub1();
+      unsub2();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // File-missing edge case
+  // ---------------------------------------------------------------------------
+  describe('getLogs file-missing edge case', () => {
+    it('returns an empty array when the log file does not exist', () => {
+      // Remove the file entirely (not just clear it)
+      if (fs.existsSync(LOG_FILE)) fs.unlinkSync(LOG_FILE);
+      const logs = getLogs();
+      expect(Array.isArray(logs)).toBe(true);
+      expect(logs).toHaveLength(0);
+    });
+
+    it('skips invalid (non-JSON) lines and returns remaining valid entries', () => {
+      // Write one valid line and one corrupted line
+      fs.writeFileSync(LOG_FILE, '{"stage":"good","data":{},"time":"2024-01-01T00:00:00.000Z"}\nNOT_JSON\n');
+      const logs = getLogs();
+      expect(logs.length).toBe(1);
+      expect(logs[0].stage).toBe('good');
     });
   });
 });
