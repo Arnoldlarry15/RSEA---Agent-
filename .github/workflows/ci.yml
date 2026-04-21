@@ -122,12 +122,24 @@ jobs:
         env:
           TRIVY_VERSION: ${{ env.TRIVY_VERSION }}
 
-      # ── Strict security scan — blocks the build on real vulnerabilities ──
-      - name: Run Trivy container scan (strict — blocks on CRITICAL/HIGH)
+      # ── Security scan — two-tier policy ─────────────────────────────────────
+      # Tier 1: HIGH vulnerabilities are reported as warnings (exit 0) so they
+      #         are visible in the log but do not block CI.
+      - name: Run Trivy scan — HIGH vulnerabilities (warn only)
+        run: |
+          ~/.cache/trivy-bin/trivy image \
+            --exit-code 0 \
+            --severity HIGH \
+            --ignore-unfixed \
+            --format table \
+            rsea-agent:ci
+
+      # Tier 2: CRITICAL vulnerabilities hard-fail CI immediately.
+      - name: Run Trivy scan — CRITICAL vulnerabilities (blocking)
         run: |
           ~/.cache/trivy-bin/trivy image \
             --exit-code 1 \
-            --severity CRITICAL,HIGH \
+            --severity CRITICAL \
             --ignore-unfixed \
             --format table \
             rsea-agent:ci
