@@ -63,7 +63,10 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Build Docker image
-        run: docker build -t rsea-agent:ci .
+        # --pull ensures CI always uses the latest base image (node:22-alpine) and
+        # never scans a stale cached layer that may contain patched-upstream CVEs
+        # (e.g. picomatch bundled by an older npm inside the base image).
+        run: docker build --pull -t rsea-agent:ci .
 
       # ── Trivy binary — cached by exact version to avoid repeated downloads ──
       - name: Cache Trivy binary
