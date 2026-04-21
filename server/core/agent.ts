@@ -150,13 +150,6 @@ export class Agent {
     cycleMetrics.record(cycleData.evaluations ?? [], riskGateBlocks);
 
     this.currentState = AgentState.IDLE;
-    return {
-      observations: cycleData.observations,
-      plan: cycleData.plan,
-      results: cycleData.results,
-      state: this.currentState,
-      goalCompleted: this.goals.isComplete()
-    };
     const executedActions = cycleData.results.map((r: any) => r.action);
     await this.reflector.reflect(cycleData.observations, cycleData.plan, executedActions, cycleData.results, cycleData.evaluations);
 
