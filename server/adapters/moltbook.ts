@@ -111,8 +111,8 @@ const WORD_NUMBERS: Record<string, number> = {
  * Returns the integer result, or null if the challenge cannot be parsed.
  */
 export function solveVerificationChallenge(challenge: string): number | null {
-  // Strip obfuscation: lowercase, remove non-alphanumeric/space chars
-  let text = challenge.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  // Strip obfuscation: lowercase, remove non-alphanumeric/space/decimal chars
+  let text = challenge.toLowerCase().replace(/[^a-z0-9.\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
   // Replace "divided by" before single-word substitutions
   text = text.replace(/\bdivided\s+by\b/g, 'dividedby');
@@ -259,14 +259,28 @@ export async function markNotificationsRead(postId: string): Promise<unknown> {
   return moltbookRequest(`/notifications/read-by-post/${encodeURIComponent(postId)}`, { method: 'POST' });
 }
 
+interface VerificationChallenge {
+  id: string;
+  challenge: string;
+}
+
+function isVerificationChallenge(v: unknown): v is VerificationChallenge {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    typeof (v as Record<string, unknown>).id === 'string' &&
+    typeof (v as Record<string, unknown>).challenge === 'string'
+  );
+}
+
 /**
  * Internal helper: if the API response contains a verification challenge,
  * solve it automatically and submit the answer.
  * Moltbook returns { verification: { id, challenge } } on new post/comment responses.
  */
 async function _handleVerification(result: Record<string, unknown>): Promise<void> {
-  const v = result.verification as { id?: string; challenge?: string } | undefined;
-  if (!v?.id || !v?.challenge) return;
+  const v = result.verification;
+  if (!isVerificationChallenge(v)) return;
 
   const answer = solveVerificationChallenge(v.challenge);
   if (answer === null) {

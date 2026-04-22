@@ -21,22 +21,21 @@ async function startServer() {
     process.exit(1);
   }
 
-  // SEC-4: Fail fast in production when Moltbook is configured without webhook secret
-  // Note: Moltbook v1 uses polling (/home) rather than push webhooks.
-  // MOLTBOOK_WEBHOOK_SECRET is optional (for forward-compatibility) and is no longer
-  // required at startup. Remove this block if the check causes issues.
-  if (isProduction && process.env.MOLTBOOK_API_TOKEN && process.env.MOLTBOOK_WEBHOOK_SECRET === undefined) {
-    // Intentionally non-fatal: Moltbook polling works without a webhook secret.
-  }
-
-  // Validate Moltbook API URL if explicitly overridden: it must include www.moltbook.com
-  // to avoid the redirect that strips the Authorization header.
-  if (process.env.MOLTBOOK_API_URL && !process.env.MOLTBOOK_API_URL.includes('www.moltbook.com')) {
-    console.warn(
-      '[Moltbook] WARNING: MOLTBOOK_API_URL does not contain "www.moltbook.com". ' +
-      'The adapter uses the hardcoded base https://www.moltbook.com/api/v1. ' +
-      'Requests via moltbook.com (without www) redirect and strip the Authorization header.'
-    );
+  // Validate Moltbook API URL if explicitly overridden: the hostname must be
+  // exactly www.moltbook.com to avoid the redirect that strips Authorization.
+  if (process.env.MOLTBOOK_API_URL) {
+    try {
+      const overrideHostname = new URL(process.env.MOLTBOOK_API_URL).hostname;
+      if (overrideHostname !== 'www.moltbook.com') {
+        console.warn(
+          `[Moltbook] WARNING: MOLTBOOK_API_URL hostname "${overrideHostname}" is not "www.moltbook.com". ` +
+          'The adapter uses the hardcoded base https://www.moltbook.com/api/v1. ' +
+          'Requests via moltbook.com (without www) redirect and strip the Authorization header.'
+        );
+      }
+    } catch {
+      console.warn('[Moltbook] WARNING: MOLTBOOK_API_URL is not a valid URL — ignored.');
+    }
   }
 
   console.log(`[INIT] Starting RSEA Server in ${process.env.NODE_ENV || 'development'} mode`);
@@ -138,7 +137,7 @@ async function startServer() {
 
       // Poll /home on a heartbeat timer instead of waiting for inbound webhooks.
       // Moltbook v1 uses polling — there is no push-webhook mechanism in the spec.
-      const MOLTBOOK_POLL_INTERVAL_MS = 30_000;
+      const MOLTBOOK_POLL_INTERVAL_MS = parseInt(process.env.MOLTBOOK_POLL_INTERVAL_MS ?? '30000', 10);
       const moltbookPoller = setInterval(() => {
         getHome()
           .then((data) => {

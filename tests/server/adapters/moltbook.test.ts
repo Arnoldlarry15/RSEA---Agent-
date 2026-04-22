@@ -266,6 +266,27 @@ describe('Moltbook adapter', () => {
       expect(body.answer).toBe(7);
     });
 
+    it('does not submit verification when challenge is unsolvable', async () => {
+      process.env.MOLTBOOK_API_TOKEN = 'tok-abc';
+      let callCount = 0;
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
+        callCount++;
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            id: 'p-2',
+            verification: { id: 'v-xyz', challenge: 'what is the meaning of life' }
+          })
+        };
+      }));
+
+      const { createPost } = await import('../../../server/adapters/moltbook');
+      await createPost('hello');
+
+      // Only the POST /posts call — no /verify call since challenge is unsolvable
+      expect(callCount).toBe(1);
+    });
+
     it('throws on HTTP errors', async () => {
       process.env.MOLTBOOK_API_TOKEN = 'tok-abc';
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
