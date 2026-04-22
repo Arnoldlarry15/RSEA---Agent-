@@ -47,6 +47,18 @@ export interface RiskAssessment {
 }
 
 export class PreExecutionRiskGate {
+  // ── POLICY CONTRACT ───────────────────────────────────────────────────────────
+  // This gate is POLICY-DRIVEN, not opinion-driven.
+  // The blocking decision is derived solely from the computed riskScore vs the
+  // HARD_BLOCK_THRESHOLD constant — never from module opinions or preferences.
+  //
+  //   CORRECT: if (riskScore > HARD_BLOCK_THRESHOLD) block()
+  //   WRONG:   if (someEvaluator.disagrees()) block()
+  //
+  // Signals 1-4 below are deterministic numeric inputs.
+  // No LLM call is made; the gate never changes the plan — it only allows/blocks.
+  // ─────────────────────────────────────────────────────────────────────────────
+
   /**
    * Assesses risk for a single action and decides whether to allow it.
    *

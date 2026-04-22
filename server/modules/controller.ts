@@ -220,6 +220,17 @@ export class Controller {
     return { observations, plan: rankedTasks, results, evaluations };
   }
 
+  // ── HARD EXECUTION BOUNDARY ──────────────────────────────────────────────────
+  // This is the ONLY authorised execution path in the entire system.
+  //
+  //   Controller._executeWithRiskGate()
+  //     → Sniper.executeSurgicalStrike()
+  //       → Executor.execute()
+  //
+  // Evaluators, Reflectors, and Risk modules MUST NEVER call Executor directly.
+  // Nothing outside this method may trigger Sniper or Executor.
+  // ─────────────────────────────────────────────────────────────────────────────
+
   /**
    * Runs the PreExecutionRiskGate for a task and either delegates to the Sniper
    * (when the gate allows) or returns a synthetic blocked result (when the gate
