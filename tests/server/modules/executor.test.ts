@@ -10,8 +10,16 @@ vi.mock('../../../server/utils/logger', () => ({
 
 // Mock Moltbook adapter so tests don't need a live API
 vi.mock('../../../server/adapters/moltbook', () => ({
-  sendMessage: vi.fn().mockResolvedValue({ id: 'msg1', ok: true }),
-  fetchThread: vi.fn().mockResolvedValue({ messages: [{ id: 'm1', content: 'hello' }] }),
+  createPost: vi.fn().mockResolvedValue({ id: 'post-1', ok: true }),
+  createComment: vi.fn().mockResolvedValue({ id: 'comment-1', ok: true }),
+  upvotePost: vi.fn().mockResolvedValue({ ok: true }),
+  downvotePost: vi.fn().mockResolvedValue({ ok: true }),
+  getHome: vi.fn().mockResolvedValue({ feed: [] }),
+  getFeed: vi.fn().mockResolvedValue({ posts: [] }),
+  getPostComments: vi.fn().mockResolvedValue({ comments: [] }),
+  submitVerification: vi.fn().mockResolvedValue({ verified: true }),
+  getAgentStatus: vi.fn().mockResolvedValue({ status: 'active' }),
+  markNotificationsRead: vi.fn().mockResolvedValue({ ok: true }),
 }));
 
 describe('Executor', () => {
@@ -338,28 +346,20 @@ describe('Executor', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // moltbook_send_message tool
+  // moltbook_create_post tool
   // ---------------------------------------------------------------------------
-  describe('moltbook_send_message tool', () => {
-    it('sends a message and reports success', async () => {
+  describe('moltbook_create_post tool', () => {
+    it('creates a post and reports success', async () => {
       const results = await executor.execute([
-        { action: 'strike', tool: 'moltbook_send_message', payload: { threadId: 'thread-1', content: 'hello' } }
+        { action: 'strike', tool: 'moltbook_create_post', payload: { content: 'hello world' } }
       ]);
       expect(results[0].status).toBe('executed');
-      expect(results[0].outcome).toContain('thread-1');
-    });
-
-    it('fails when threadId is missing', async () => {
-      const results = await executor.execute([
-        { action: 'strike', tool: 'moltbook_send_message', payload: { content: 'hello' } }
-      ]);
-      expect(results[0].status).toBe('failed');
-      expect(results[0].outcome).toContain('threadId');
+      expect(results[0].outcome).toContain('post');
     });
 
     it('fails when content is missing', async () => {
       const results = await executor.execute([
-        { action: 'strike', tool: 'moltbook_send_message', payload: { threadId: 'thread-1' } }
+        { action: 'strike', tool: 'moltbook_create_post', payload: {} }
       ]);
       expect(results[0].status).toBe('failed');
       expect(results[0].outcome).toContain('content');
@@ -367,32 +367,172 @@ describe('Executor', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // moltbook_fetch_thread tool
+  // moltbook_create_comment tool
   // ---------------------------------------------------------------------------
-  describe('moltbook_fetch_thread tool', () => {
-    it('fetches a thread and returns its content', async () => {
+  describe('moltbook_create_comment tool', () => {
+    it('creates a comment and reports success', async () => {
       const results = await executor.execute([
-        { action: 'strike', tool: 'moltbook_fetch_thread', payload: { threadId: 'thread-1' } }
+        { action: 'strike', tool: 'moltbook_create_comment', payload: { postId: 'post-1', content: 'nice post' } }
       ]);
       expect(results[0].status).toBe('executed');
-      expect(results[0].outcome).toContain('thread-1');
+      expect(results[0].outcome).toContain('post-1');
     });
 
-    it('uses custom page and limit parameters when provided', async () => {
-      const { fetchThread } = await import('../../../server/adapters/moltbook');
+    it('fails when postId is missing', async () => {
       const results = await executor.execute([
-        { action: 'strike', tool: 'moltbook_fetch_thread', payload: { threadId: 'thread-2', page: 2, limit: 10 } }
-      ]);
-      expect(results[0].status).toBe('executed');
-      expect(fetchThread).toHaveBeenCalledWith('thread-2', 2, 10);
-    });
-
-    it('fails when threadId is missing', async () => {
-      const results = await executor.execute([
-        { action: 'strike', tool: 'moltbook_fetch_thread', payload: {} }
+        { action: 'strike', tool: 'moltbook_create_comment', payload: { content: 'nice post' } }
       ]);
       expect(results[0].status).toBe('failed');
-      expect(results[0].outcome).toContain('threadId');
+    });
+
+    it('fails when content is missing', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_create_comment', payload: { postId: 'post-1' } }
+      ]);
+      expect(results[0].status).toBe('failed');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // moltbook_upvote / moltbook_downvote tools
+  // ---------------------------------------------------------------------------
+  describe('moltbook_upvote tool', () => {
+    it('upvotes a post and reports success', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_upvote', payload: { postId: 'post-1' } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].outcome).toContain('post-1');
+    });
+
+    it('fails when postId is missing', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_upvote', payload: {} }
+      ]);
+      expect(results[0].status).toBe('failed');
+    });
+  });
+
+  describe('moltbook_downvote tool', () => {
+    it('downvotes a post and reports success', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_downvote', payload: { postId: 'post-1' } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].outcome).toContain('post-1');
+    });
+
+    it('fails when postId is missing', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_downvote', payload: {} }
+      ]);
+      expect(results[0].status).toBe('failed');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // moltbook_get_home tool
+  // ---------------------------------------------------------------------------
+  describe('moltbook_get_home tool', () => {
+    it('fetches home dashboard and reports success', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_get_home', payload: {} }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].outcome).toContain('home');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // moltbook_get_feed tool
+  // ---------------------------------------------------------------------------
+  describe('moltbook_get_feed tool', () => {
+    it('fetches feed and reports success', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_get_feed', payload: {} }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].outcome).toContain('feed');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // moltbook_get_post_comments tool
+  // ---------------------------------------------------------------------------
+  describe('moltbook_get_post_comments tool', () => {
+    it('fetches comments for a post and reports success', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_get_post_comments', payload: { postId: 'post-1' } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].outcome).toContain('post-1');
+    });
+
+    it('fails when postId is missing', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_get_post_comments', payload: {} }
+      ]);
+      expect(results[0].status).toBe('failed');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // moltbook_submit_verification tool
+  // ---------------------------------------------------------------------------
+  describe('moltbook_submit_verification tool', () => {
+    it('submits a verification answer and reports success', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_submit_verification', payload: { verificationId: 'v-1', answer: 8 } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].outcome).toContain('v-1');
+    });
+
+    it('fails when verificationId is missing', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_submit_verification', payload: { answer: 8 } }
+      ]);
+      expect(results[0].status).toBe('failed');
+    });
+
+    it('fails when answer is missing', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_submit_verification', payload: { verificationId: 'v-1' } }
+      ]);
+      expect(results[0].status).toBe('failed');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // moltbook_get_agent_status tool
+  // ---------------------------------------------------------------------------
+  describe('moltbook_get_agent_status tool', () => {
+    it('fetches agent status and reports success', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_get_agent_status', payload: {} }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].outcome).toContain('status');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // moltbook_mark_notifications_read tool
+  // ---------------------------------------------------------------------------
+  describe('moltbook_mark_notifications_read tool', () => {
+    it('marks notifications read for a post and reports success', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_mark_notifications_read', payload: { postId: 'post-1' } }
+      ]);
+      expect(results[0].status).toBe('executed');
+      expect(results[0].outcome).toContain('post-1');
+    });
+
+    it('fails when postId is missing', async () => {
+      const results = await executor.execute([
+        { action: 'strike', tool: 'moltbook_mark_notifications_read', payload: {} }
+      ]);
+      expect(results[0].status).toBe('failed');
     });
   });
 
