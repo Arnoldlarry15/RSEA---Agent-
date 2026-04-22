@@ -214,6 +214,19 @@ function runCodeInWorker(code: string, timeoutMs: number): Promise<string> {
 }
 
 export class Executor {
+  // DESIGN RULE:
+  // This agent is NOT a red-team system.
+  // Evaluation modules are observational only.
+  // They must never influence execution decisions directly.
+  //
+  // The only valid caller chain for this class is:
+  //   Controller._executeWithRiskGate()
+  //     → Sniper.executeSurgicalStrike()
+  //       → Executor.execute()
+  //
+  // Do NOT import or instantiate Executor outside of the Sniper module.
+  // Any other path that reaches Executor.execute() is an architecture violation.
+
   private registry: ToolRegistry;
   /**
    * Optional shared RulesEngine injected by the Controller so that the

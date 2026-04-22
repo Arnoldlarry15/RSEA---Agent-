@@ -1,6 +1,26 @@
 import { LLMInterface } from '../cognition/llm';
 
-export class Evaluator {
+/**
+ * DESIGN RULE — Strict contract for all evaluation modules.
+ *
+ * This agent is NOT a red-team system.
+ * Evaluation modules are observational only and must never influence
+ * execution decisions directly.
+ *
+ * Implementors:
+ *   MUST     — receive data and return scores/rankings.
+ *   MUST NOT — return executable actions.
+ *   MUST NOT — call tools or the Executor.
+ *   MUST NOT — mutate execution state directly.
+ *
+ * Implementors are read-only observers: they score and rank inputs but are
+ * forbidden from triggering any side-effecting execution path.
+ */
+export interface IEvaluator {
+  rankStrategies(objective: string, strategies: unknown[]): Promise<unknown[]>;
+}
+
+export class Evaluator implements IEvaluator {
   private llm: LLMInterface;
 
   constructor(llm: LLMInterface) {
