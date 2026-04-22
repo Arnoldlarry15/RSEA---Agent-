@@ -137,7 +137,10 @@ async function startServer() {
 
       // Poll /home on a heartbeat timer instead of waiting for inbound webhooks.
       // Moltbook v1 uses polling — there is no push-webhook mechanism in the spec.
-      const MOLTBOOK_POLL_INTERVAL_MS = parseInt(process.env.MOLTBOOK_POLL_INTERVAL_MS ?? '30000', 10);
+      const rawPollInterval = parseInt(process.env.MOLTBOOK_POLL_INTERVAL_MS ?? '30000', 10);
+      const MOLTBOOK_POLL_INTERVAL_MS = rawPollInterval > 0 && Number.isFinite(rawPollInterval)
+        ? rawPollInterval
+        : 30_000;
       const moltbookPoller = setInterval(() => {
         getHome()
           .then((data) => {

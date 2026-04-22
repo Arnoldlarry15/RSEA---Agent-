@@ -284,6 +284,8 @@ async function _handleVerification(result: Record<string, unknown>): Promise<voi
 
   const answer = solveVerificationChallenge(v.challenge);
   if (answer === null) {
+    // Unsolvable challenge: log and return. The created content will remain
+    // hidden (pending) on Moltbook until the 5-minute verification window expires.
     logEvent('moltbook_verification_unsolvable', { verificationId: v.id, challenge: v.challenge });
     return;
   }
