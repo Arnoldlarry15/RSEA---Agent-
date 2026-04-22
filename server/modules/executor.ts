@@ -4,7 +4,18 @@ import { promisify } from 'util';
 import { createHash } from 'crypto';
 import { logEvent } from '../utils/logger';
 import { isSsrfTarget, isSsrfTargetAsync } from '../utils/ssrf';
-import { sendMessage as moltbookSend, fetchThread as moltbookFetch } from '../adapters/moltbook';
+import {
+  createPost as moltbookCreatePost,
+  createComment as moltbookCreateComment,
+  upvotePost as moltbookUpvote,
+  downvotePost as moltbookDownvote,
+  getHome as moltbookGetHome,
+  getFeed as moltbookGetFeed,
+  getPostComments as moltbookGetPostComments,
+  submitVerification as moltbookSubmitVerification,
+  getAgentStatus as moltbookGetAgentStatus,
+  markNotificationsRead as moltbookMarkNotificationsRead,
+} from '../adapters/moltbook';
 import { ToolRegistry, createDefaultRegistry } from '../core/tools/index';
 import { RulesEngine } from '../core/rules';
 
@@ -425,24 +436,64 @@ export class Executor {
           if (luck > 0.95) outcome = `Anomaly: Collision detected for simulated task (${action.payload.info || ''}).`;
           else outcome = `Simulated Execution optimized successfully for: ${action.payload.info || ''}`;
           status = 'simulated';
-        } else if (action.tool === 'moltbook_send_message') {
-          const { threadId, content } = action.payload ?? {};
-          if (!threadId || !content) {
-            throw new Error('moltbook_send_message requires payload.threadId and payload.content');
+        } else if (action.tool === 'moltbook_create_post') {
+          const { content } = action.payload ?? {};
+          if (!content) {
+            throw new Error('moltbook_create_post requires payload.content');
           }
-          const result = await moltbookSend(String(threadId), String(content));
-          outcome = `Message sent to Moltbook thread '${threadId}': ${JSON.stringify(result)}`;
-        } else if (action.tool === 'moltbook_fetch_thread') {
-          const { threadId, page, limit } = action.payload ?? {};
-          if (!threadId) {
-            throw new Error('moltbook_fetch_thread requires payload.threadId');
+          const result = await moltbookCreatePost(String(content));
+          outcome = `Created Moltbook post: ${JSON.stringify(result)}`;
+        } else if (action.tool === 'moltbook_create_comment') {
+          const { postId, content } = action.payload ?? {};
+          if (!postId || !content) {
+            throw new Error('moltbook_create_comment requires payload.postId and payload.content');
           }
-          const result = await moltbookFetch(
-            String(threadId),
-            page !== undefined ? Number(page) : 1,
-            limit !== undefined ? Number(limit) : 50
-          );
-          outcome = `Fetched Moltbook thread '${threadId}': ${JSON.stringify(result)}`;
+          const result = await moltbookCreateComment(String(postId), String(content));
+          outcome = `Commented on Moltbook post '${postId}': ${JSON.stringify(result)}`;
+        } else if (action.tool === 'moltbook_upvote') {
+          const { postId } = action.payload ?? {};
+          if (!postId) {
+            throw new Error('moltbook_upvote requires payload.postId');
+          }
+          const result = await moltbookUpvote(String(postId));
+          outcome = `Upvoted Moltbook post '${postId}': ${JSON.stringify(result)}`;
+        } else if (action.tool === 'moltbook_downvote') {
+          const { postId } = action.payload ?? {};
+          if (!postId) {
+            throw new Error('moltbook_downvote requires payload.postId');
+          }
+          const result = await moltbookDownvote(String(postId));
+          outcome = `Downvoted Moltbook post '${postId}': ${JSON.stringify(result)}`;
+        } else if (action.tool === 'moltbook_get_home') {
+          const result = await moltbookGetHome();
+          outcome = `Moltbook home: ${JSON.stringify(result)}`;
+        } else if (action.tool === 'moltbook_get_feed') {
+          const result = await moltbookGetFeed();
+          outcome = `Moltbook feed: ${JSON.stringify(result)}`;
+        } else if (action.tool === 'moltbook_get_post_comments') {
+          const { postId } = action.payload ?? {};
+          if (!postId) {
+            throw new Error('moltbook_get_post_comments requires payload.postId');
+          }
+          const result = await moltbookGetPostComments(String(postId));
+          outcome = `Moltbook post '${postId}' comments: ${JSON.stringify(result)}`;
+        } else if (action.tool === 'moltbook_submit_verification') {
+          const { verificationId, answer } = action.payload ?? {};
+          if (!verificationId || answer === undefined) {
+            throw new Error('moltbook_submit_verification requires payload.verificationId and payload.answer');
+          }
+          const result = await moltbookSubmitVerification(String(verificationId), Number(answer));
+          outcome = `Submitted Moltbook verification '${verificationId}': ${JSON.stringify(result)}`;
+        } else if (action.tool === 'moltbook_get_agent_status') {
+          const result = await moltbookGetAgentStatus();
+          outcome = `Moltbook agent status: ${JSON.stringify(result)}`;
+        } else if (action.tool === 'moltbook_mark_notifications_read') {
+          const { postId } = action.payload ?? {};
+          if (!postId) {
+            throw new Error('moltbook_mark_notifications_read requires payload.postId');
+          }
+          const result = await moltbookMarkNotificationsRead(String(postId));
+          outcome = `Marked Moltbook notifications read for post '${postId}': ${JSON.stringify(result)}`;
         } else {
           outcome = `Unknown tool: ${action.tool}`;
           status = 'failed';

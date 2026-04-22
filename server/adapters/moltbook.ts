@@ -1,19 +1,22 @@
 /**
  * Moltbook Adapter
  * ─────────────────
- * Handles all communication with the Moltbook messaging platform:
- *   • API authentication (Bearer token + optional refresh)
- *   • Sending messages to a thread
- *   • Fetching thread/conversation history
+ * Handles all communication with the Moltbook social network API (v1):
+ *   • API authentication (static API key — moltbook_xxx — no OAuth refresh)
+ *   • Social operations: posts, comments, upvotes, feed, home dashboard
+ *   • Verification challenge solver (math word problems)
+ *   • Agent registration (captures api_key, claim_url, verification_code)
  *   • Incoming webhook event ingestion with idempotency deduplication
+ *     (kept for forward-compatibility; Moltbook v1 uses polling, not push)
  *
  * Configuration (via environment variables):
- *   MOLTBOOK_API_URL      – Base URL of the Moltbook API  (required)
- *   MOLTBOOK_API_TOKEN    – Initial Bearer token          (required)
- *   MOLTBOOK_REFRESH_URL  – Token-refresh endpoint        (optional; enables auto-refresh)
- *   MOLTBOOK_REFRESH_TOKEN– Refresh credential            (optional)
- *   MOLTBOOK_WEBHOOK_SECRET – Expected webhook secret header value (optional)
- *   FETCH_TIMEOUT_MS      – Per-request timeout in ms (default 10 000)
+ *   MOLTBOOK_API_TOKEN      – Static API key (moltbook_xxx)                (required)
+ *   MOLTBOOK_WEBHOOK_SECRET – Expected X-Moltbook-Secret header            (optional)
+ *   FETCH_TIMEOUT_MS        – Per-request timeout in ms (default 10 000)
+ *
+ * Base URL: Always https://www.moltbook.com/api/v1 (hardcoded per spec).
+ * WARNING: Using moltbook.com without the `www` subdomain redirects and
+ *          strips the Authorization header — requests will fail silently.
  */
 
 import fs from 'fs';
@@ -21,50 +24,26 @@ import path from 'path';
 import { timingSafeEqual } from 'crypto';
 import { logEvent } from '../utils/logger';
 
-const BASE_URL = (process.env.MOLTBOOK_API_URL ?? '').replace(/\/$/, '');
+/**
+ * The canonical Moltbook API base URL.
+ * Hardcoded to prevent silent auth-stripping caused by the www-redirect.
+ * Validated at startup; never derived from an environment variable alone.
+ */
+const MOLTBOOK_BASE_URL = 'https://www.moltbook.com/api/v1';
+
 const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS ?? '10000', 10);
 
 // ── Token management ──────────────────────────────────────────────────────────
 
+/**
+ * In-memory static API key (moltbook_xxx).
+ * Updated after a successful agent registration when the real key is returned.
+ */
 let currentToken: string = process.env.MOLTBOOK_API_TOKEN ?? '';
-/** Guard flag to prevent concurrent token-refresh races.
- *  Node.js is single-threaded: between the `if (refreshInProgress)` check and the
- *  `refreshInProgress = true` assignment there is no `await`, so no other microtask
- *  can interleave — the flag is safe without an async mutex in this runtime model. */
-let refreshInProgress = false;
 
-/** Replace the in-memory Bearer token (e.g. after a refresh). */
+/** Replace the in-memory API key (called after successful agent registration). */
 export function setMoltbookToken(token: string) {
   currentToken = token;
-}
-
-/** Attempt to refresh the access token using the configured refresh URL. */
-async function refreshToken(): Promise<void> {
-  if (refreshInProgress) return; // Skip if a refresh is already in flight
-  const refreshUrl = process.env.MOLTBOOK_REFRESH_URL;
-  const refreshCredential = process.env.MOLTBOOK_REFRESH_TOKEN;
-  if (!refreshUrl || !refreshCredential) return;
-
-  refreshInProgress = true;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(refreshUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshCredential }),
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`Token refresh failed: HTTP ${res.status}`);
-    const data = await res.json() as { access_token?: string };
-    if (data.access_token) {
-      currentToken = data.access_token;
-      logEvent('moltbook_token_refreshed', { ok: true });
-    }
-  } finally {
-    clearTimeout(timer);
-    refreshInProgress = false;
-  }
 }
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
@@ -72,16 +51,15 @@ async function refreshToken(): Promise<void> {
 interface MoltbookRequestOptions {
   method?: string;
   body?: unknown;
-  retryOnUnauthorized?: boolean;
 }
 
-async function moltbookRequest(path: string, opts: MoltbookRequestOptions = {}): Promise<unknown> {
-  if (!BASE_URL) {
-    logEvent('moltbook_error', { reason: 'MOLTBOOK_API_URL not configured', path });
-    throw new Error('Moltbook adapter: MOLTBOOK_API_URL is not set');
+async function moltbookRequest(endpoint: string, opts: MoltbookRequestOptions = {}): Promise<unknown> {
+  if (!currentToken) {
+    logEvent('moltbook_error', { reason: 'MOLTBOOK_API_TOKEN not configured', endpoint });
+    throw new Error('Moltbook adapter: MOLTBOOK_API_TOKEN is not set');
   }
 
-  const url = `${BASE_URL}${path}`;
+  const url = `${MOLTBOOK_BASE_URL}${endpoint}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
@@ -100,46 +78,223 @@ async function moltbookRequest(path: string, opts: MoltbookRequestOptions = {}):
     clearTimeout(timer);
   }
 
-  // Auto-refresh on 401 and retry once
-  if (res.status === 401 && opts.retryOnUnauthorized !== false) {
-    logEvent('moltbook_auth_retry', { path });
-    await refreshToken();
-    return moltbookRequest(path, { ...opts, retryOnUnauthorized: false });
-  }
-
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     const err = new Error(`Moltbook API error ${res.status}: ${body}`);
-    logEvent('moltbook_error', { status: res.status, path, body });
+    logEvent('moltbook_error', { status: res.status, endpoint, body });
     throw err;
   }
 
   return res.json();
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Verification challenge solver ─────────────────────────────────────────────
 
-/** Send a message to a Moltbook thread. */
-export async function sendMessage(threadId: string, content: string): Promise<unknown> {
-  logEvent('moltbook_send_message', { threadId, contentLength: content.length });
-  return moltbookRequest(`/threads/${encodeURIComponent(threadId)}/messages`, {
-    method: 'POST',
-    body: { content },
-  });
+const WORD_NUMBERS: Record<string, number> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5,
+  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
+  sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
+};
+
+/**
+ * Solve a Moltbook math-word-problem verification challenge.
+ *
+ * Moltbook obfuscates challenges with alternating capitalisation and
+ * scattered symbols (e.g. "WhAt Is FiVe!!! pLuS## tHrEe?").
+ * This solver:
+ *   1. Lowercases and strips non-letter/digit/space characters
+ *   2. Replaces written-out number words with digits
+ *   3. Maps operation words (plus, minus, times, divided by) to operators
+ *   4. Evaluates the resulting arithmetic expression
+ *
+ * Returns the integer result, or null if the challenge cannot be parsed.
+ */
+export function solveVerificationChallenge(challenge: string): number | null {
+  // Strip obfuscation: lowercase, remove non-alphanumeric/space/decimal chars
+  let text = challenge.toLowerCase().replace(/[^a-z0-9.\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
+  // Replace "divided by" before single-word substitutions
+  text = text.replace(/\bdivided\s+by\b/g, 'dividedby');
+
+  // Replace written-out number words with digits
+  for (const [word, value] of Object.entries(WORD_NUMBERS)) {
+    text = text.replace(new RegExp(`\\b${word}\\b`, 'g'), String(value));
+  }
+
+  // Normalize operators to symbols
+  text = text
+    .replace(/\bplus\b/g, '+')
+    .replace(/\badd(?:ed)?\b/g, '+')
+    .replace(/\bminus\b/g, '-')
+    .replace(/\bsubtract(?:ed)?\b/g, '-')
+    .replace(/\btimes\b/g, '*')
+    .replace(/\bmultipl(?:y|ied)\b/g, '*')
+    .replace(/\bdividedby\b/g, '/')
+    .replace(/\bdivide(?:d)?\b/g, '/');
+
+  // Extract a simple two-operand arithmetic expression: <num> <op> <num>
+  const match = text.match(/(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)/);
+  if (!match) return null;
+
+  const a = parseFloat(match[1]);
+  const op = match[2];
+  const b = parseFloat(match[3]);
+
+  if (isNaN(a) || isNaN(b)) return null;
+
+  let result: number;
+  switch (op) {
+    case '+': result = a + b; break;
+    case '-': result = a - b; break;
+    case '*': result = a * b; break;
+    case '/':
+      if (b === 0) return null;
+      result = a / b;
+      break;
+    default: return null;
+  }
+
+  return Number.isFinite(result) ? Math.round(result) : null;
 }
 
-/** Fetch a thread's message history (paginated; returns first page by default). */
-export async function fetchThread(threadId: string, page = 1, limit = 50): Promise<unknown> {
-  logEvent('moltbook_fetch_thread', { threadId, page, limit });
-  return moltbookRequest(
-    `/threads/${encodeURIComponent(threadId)}/messages?page=${page}&limit=${limit}`
+// ── Public API ────────────────────────────────────────────────────────────────
+
+export interface MoltbookRegistrationResult {
+  agent: {
+    api_key: string;
+    claim_url: string;
+    verification_code: string;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+/**
+ * Register this agent with Moltbook.
+ * Sends { name, description } and returns the full registration payload
+ * including api_key, claim_url, and verification_code.
+ * The caller is responsible for calling setMoltbookToken(result.agent.api_key).
+ */
+export async function registerAgent(meta: { name: string; description: string }): Promise<MoltbookRegistrationResult> {
+  logEvent('moltbook_register_agent', { name: meta.name });
+  const result = await moltbookRequest('/agents/register', { method: 'POST', body: meta });
+  return result as MoltbookRegistrationResult;
+}
+
+/** GET /api/v1/home — dashboard / heartbeat; primary polling target. */
+export async function getHome(): Promise<unknown> {
+  logEvent('moltbook_get_home', {});
+  return moltbookRequest('/home');
+}
+
+/** GET /api/v1/feed — the agent's personalised content feed. */
+export async function getFeed(): Promise<unknown> {
+  logEvent('moltbook_get_feed', {});
+  return moltbookRequest('/feed');
+}
+
+/**
+ * POST /api/v1/posts — create a post.
+ * Automatically solves and submits the verification challenge if one is returned.
+ */
+export async function createPost(content: string): Promise<unknown> {
+  logEvent('moltbook_create_post', { contentLength: content.length });
+  const result = await moltbookRequest('/posts', { method: 'POST', body: { content } }) as Record<string, unknown>;
+  await _handleVerification(result);
+  return result;
+}
+
+/**
+ * POST /api/v1/posts/{id}/comments — comment on a post.
+ * Automatically solves and submits the verification challenge if one is returned.
+ */
+export async function createComment(postId: string, content: string): Promise<unknown> {
+  logEvent('moltbook_create_comment', { postId, contentLength: content.length });
+  const result = await moltbookRequest(
+    `/posts/${encodeURIComponent(postId)}/comments`,
+    { method: 'POST', body: { content } }
+  ) as Record<string, unknown>;
+  await _handleVerification(result);
+  return result;
+}
+
+/** POST /api/v1/posts/{id}/upvote */
+export async function upvotePost(postId: string): Promise<unknown> {
+  logEvent('moltbook_upvote', { postId });
+  return moltbookRequest(`/posts/${encodeURIComponent(postId)}/upvote`, { method: 'POST' });
+}
+
+/** POST /api/v1/posts/{id}/downvote */
+export async function downvotePost(postId: string): Promise<unknown> {
+  logEvent('moltbook_downvote', { postId });
+  return moltbookRequest(`/posts/${encodeURIComponent(postId)}/downvote`, { method: 'POST' });
+}
+
+/** GET /api/v1/posts/{id}/comments — read a post's comment thread. */
+export async function getPostComments(postId: string): Promise<unknown> {
+  logEvent('moltbook_get_post_comments', { postId });
+  return moltbookRequest(`/posts/${encodeURIComponent(postId)}/comments`);
+}
+
+/**
+ * POST /api/v1/verify — submit the answer to a math verification challenge.
+ * Must be called within 5 minutes of the challenge being issued or content
+ * stays hidden.
+ */
+export async function submitVerification(verificationId: string, answer: number): Promise<unknown> {
+  logEvent('moltbook_submit_verification', { verificationId, answer });
+  return moltbookRequest('/verify', { method: 'POST', body: { id: verificationId, answer } });
+}
+
+/** GET /api/v1/agents/status — check claim status after registration. */
+export async function getAgentStatus(): Promise<unknown> {
+  logEvent('moltbook_get_agent_status', {});
+  return moltbookRequest('/agents/status');
+}
+
+/** POST /api/v1/notifications/read-by-post/{id} — mark notifications read. */
+export async function markNotificationsRead(postId: string): Promise<unknown> {
+  logEvent('moltbook_mark_notifications_read', { postId });
+  return moltbookRequest(`/notifications/read-by-post/${encodeURIComponent(postId)}`, { method: 'POST' });
+}
+
+interface VerificationChallenge {
+  id: string;
+  challenge: string;
+}
+
+function isVerificationChallenge(v: unknown): v is VerificationChallenge {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    typeof (v as Record<string, unknown>).id === 'string' &&
+    typeof (v as Record<string, unknown>).challenge === 'string'
   );
 }
 
-/** Register this agent with Moltbook (optional; call once at startup if needed). */
-export async function registerAgent(agentMeta: Record<string, unknown>): Promise<unknown> {
-  logEvent('moltbook_register_agent', { agentMeta });
-  return moltbookRequest('/agents/register', { method: 'POST', body: agentMeta });
+/**
+ * Internal helper: if the API response contains a verification challenge,
+ * solve it automatically and submit the answer.
+ * Moltbook returns { verification: { id, challenge } } on new post/comment responses.
+ */
+async function _handleVerification(result: Record<string, unknown>): Promise<void> {
+  const v = result.verification;
+  if (!isVerificationChallenge(v)) return;
+
+  const answer = solveVerificationChallenge(v.challenge);
+  if (answer === null) {
+    // Unsolvable challenge: log and return. The created content will remain
+    // hidden (pending) on Moltbook until the 5-minute verification window expires.
+    logEvent('moltbook_verification_unsolvable', { verificationId: v.id, challenge: v.challenge });
+    return;
+  }
+  try {
+    await submitVerification(v.id, answer);
+    logEvent('moltbook_verification_submitted', { verificationId: v.id, answer });
+  } catch (err: any) {
+    logEvent('moltbook_verification_failed', { verificationId: v.id, error: err.message });
+  }
 }
 
 // ── Webhook ingestion with idempotency ────────────────────────────────────────
@@ -189,13 +344,16 @@ export function _clearProcessedEventIds(): void {
   processedEventIds.clear();
 }
 
+/**
+ * Moltbook webhook event shape (forward-compatible).
+ * Moltbook v1 does not define a push-webhook payload format — agents are
+ * expected to poll /home and /feed.  This interface is kept for
+ * forward-compatibility if Moltbook adds push webhooks in a future spec.
+ */
 export interface MoltbookWebhookEvent {
   id: string;
   type: string;
-  threadId?: string;
-  senderId?: string;
   content?: string;
-  timestamp?: string;
   [key: string]: unknown;
 }
 
