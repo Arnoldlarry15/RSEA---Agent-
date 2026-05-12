@@ -17,7 +17,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.90.0",
+    "@anthropic-ai/sdk": "^0.95.2",
     "@google/genai": "^1.29.0",
     "better-sqlite3": "^12.9.0",
     "dotenv": "^17.2.3",
